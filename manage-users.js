@@ -1057,23 +1057,9 @@ async function resolveStudioId() {
 }
 
 async function fetchManageRows(studioId) {
-  if (activeTab === "students" || activeTab === "all") {
-    let query = supabase
-      .from("users")
-      .select('id, studio_id, "firstName", "lastName", email, "avatarUrl", roles, "teacherIds", instrument, points, level, parent_uuid, active, deactivated_at')
-      .eq("studio_id", studioId);
-    if (activeTab === "students") {
-      query = query.contains("roles", ["student"]);
-    }
-    const { data, error } = await query;
-    if (error) throw error;
-    return data ?? [];
-  }
-
-  const { data, error } = await supabase
-    .from("v_manage_users")
-    .select("*")
-    .eq("studio_id", studioId);
+  const { data, error } = await supabase.rpc("get_manage_users_for_studio", {
+    p_studio_id: studioId
+  });
   if (error) throw error;
   return data ?? [];
 }
@@ -1197,7 +1183,15 @@ async function initManageUsersPanel() {
 
   const access = await getAccessFlags();
   const viewerContext = await getViewerContext();
-  const allowed = Boolean((access?.is_owner || access?.can_manage_users) && !viewerContext?.isStudent);
+  const allowed = Boolean(
+    (
+      access?.is_owner ||
+      access?.can_manage_users ||
+      viewerContext?.isOwner ||
+      viewerContext?.isAdmin ||
+      viewerContext?.isTeacher
+    ) && !viewerContext?.isStudent
+  );
   if (!allowed) {
     renderStatus("Not authorized.", true);
     console.warn("[ManageUsers] redirecting: insufficient permissions");

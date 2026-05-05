@@ -209,10 +209,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     activeCardFilter = normalizedRequestedFilter;
   }
 
-  const todayString = () => new Date().toISOString().split("T")[0];
+  const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const padDatePart = (value) => String(value).padStart(2, "0");
+  const todayString = () => {
+    const today = new Date();
+    return `${today.getFullYear()}-${padDatePart(today.getMonth() + 1)}-${padDatePart(today.getDate())}`;
+  };
+  const getDateOnlyString = (value) => {
+    if (!value) return "";
+    const text = String(value);
+    if (DATE_ONLY_RE.test(text)) return text;
+    if (DATE_ONLY_RE.test(text.slice(0, 10))) return text.slice(0, 10);
+    return "";
+  };
+  const formatDateOnlyForDisplay = (value, options = { month: "short", day: "2-digit" }) => {
+    const dateOnly = getDateOnlyString(value);
+    if (!dateOnly) return "";
+    const [year, month, day] = dateOnly.split("-").map(Number);
+    return new Intl.DateTimeFormat("en-US", options).format(new Date(year, month - 1, day));
+  };
   const isApprovedStatus = (value) => String(value || "").toLowerCase() === "approved";
   const isNeedsInfoStatus = (value) => String(value || "").toLowerCase() === "needs info";
-  const isSameDay = (value, today) => String(value || "").startsWith(today);
+  const isSameDay = (value, today) => getDateOnlyString(value) === today;
   const getApprovedTimestamp = (log) => log._approvedAtLocal || log.approved_at || log.updated_at || "";
   const isApprovedToday = (log, today) => {
     if (!isApprovedStatus(log.status)) return false;
@@ -234,7 +252,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const targetUserId = String(logRow?.userId || "").trim();
     if (!targetUserId) return;
     const category = String(logRow?.category || "log").trim();
-    const dateText = logRow?.date ? new Date(logRow.date).toLocaleDateString() : "selected date";
+    const dateText = logRow?.date
+      ? formatDateOnlyForDisplay(logRow.date, { month: "numeric", day: "numeric", year: "numeric" })
+      : "selected date";
     const message = `Your ${category} log from ${dateText} was marked Needs Info. Please update details.`;
     const basePayload = {
       userId: targetUserId,
@@ -457,8 +477,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       let bVal = b[currentSort.field] || "";
 
       if (currentSort.field === "date") {
-        aVal = new Date(aVal);
-        bVal = new Date(bVal);
+        aVal = getDateOnlyString(aVal);
+        bVal = getDateOnlyString(bVal);
       }
       if (currentSort.field === "points") {
         aVal = parseInt(aVal) || 0;
@@ -543,10 +563,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function formatShortDate(value) {
-    if (!value) return "";
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed)) return "";
-    return parsed.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+    return formatDateOnlyForDisplay(value, { month: "short", day: "2-digit" });
   }
 
   function renderLogsTable(list) {
@@ -577,7 +594,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         </td>
         <td class="date-cell">
           <div class="date-wrapper">
-            <input type="date" class="edit-input date-picker" data-id="${log.id}" data-field="date" value="${(log.date || '').split('T')[0] || ''}">
+            <input type="date" class="edit-input date-picker" data-id="${log.id}" data-field="date" value="${getDateOnlyString(log.date)}">
             <span class="date-label">${formatShortDate(log.date)}</span>
           </div>
         </td>
@@ -622,6 +639,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         // Normalize values
         if (field === "points") value = parseInt(value) || 0;
         if (field === "category") value = String(value).toLowerCase();
+        if (field === "date") value = getDateOnlyString(value);
         if (field === "date") {
           const wrapper = e.target.closest(".date-wrapper");
           const label = wrapper?.querySelector(".date-label");
@@ -717,21 +735,29 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? await fetchStudentLevelSnapshots(affectedUserIds)
         : new Map();
 
-      const { data: deletedRows, error } = await supabase
-        .from("logs")
-        .delete()
-        .in("id", selectedIds)
-        .eq("studio_id", viewerContext.studioId)
-        .select("id,userId,studio_id");
+      const numericSelectedIds = selectedIds
+        .map(id => Number(id))
+        .filter(id => Number.isSafeInteger(id));
+      if (numericSelectedIds.length !== selectedIds.length) {
+        console.error("[DELETE ERROR] Invalid log ids", { selectedIds, numericSelectedIds });
+        alert("Some selected logs had invalid IDs. Please refresh and try again.");
+        return;
+      }
+
+      const { data: deletedRows, error } = await supabase.rpc("delete_logs_for_studio", {
+        p_studio_id: viewerContext.studioId,
+        p_log_ids: numericSelectedIds
+      });
+      console.log("[DELETE RESULT]", { selectedIds, numericSelectedIds, deletedRows, error });
       if (error) {
-        console.error("[DELETE ERROR]", error);
+        console.error("[DELETE ERROR]", error, { selectedIds, numericSelectedIds, deletedRows });
         alert("Failed to delete logs: " + error.message);
         return;
       }
 
       const deletedIds = new Set((deletedRows || []).map(row => String(row.id)));
       if (deletedIds.size === 0) {
-        console.warn("[DELETE WARNING] Delete returned no rows", { selectedIds, deletedRows });
+        console.warn("[DELETE WARNING] Delete returned no rows", { selectedIds, numericSelectedIds, deletedRows, error });
         alert("No logs were deleted. Please refresh and try again.");
         return;
       }
