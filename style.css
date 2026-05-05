@@ -8988,6 +8988,77 @@ body.leaderboard-page .leaderboard-orientation-hint {
   display: none;
 }
 
+.manage-users-table td.mobile-user-summary {
+  display: table-cell;
+  width: 100%;
+  padding: 0;
+  border: 0;
+}
+
+.manage-users-table .mobile-user-card-toggle {
+  width: 100%;
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: #0b3c66;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.manage-users-table .mobile-user-card-name {
+  min-width: 0;
+  color: #0b4f8a;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.manage-users-table .mobile-user-card-meta {
+  min-width: 0;
+  grid-column: 1 / 2;
+  color: #65788b;
+  font-size: 0.82rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manage-users-table .mobile-user-card-toggle::after {
+  content: ">";
+  grid-column: 2 / 3;
+  grid-row: 1 / 3;
+  color: #0b4f8a;
+  font-size: 0.95rem;
+  font-weight: 900;
+  transition: transform 160ms ease;
+}
+
+.manage-users-table .mobile-user-card-toggle[aria-expanded="true"]::after {
+  content: "v";
+  transform: translateY(1px);
+}
+
+.manage-users-table tbody tr.mobile-collapsible-row.is-collapsed td:not(.mobile-user-summary) {
+  display: none !important;
+}
+
+@media (min-width: 701px) {
+  .manage-users-table tbody tr.mobile-collapsible-row.is-expanded td {
+    display: table-cell;
+  }
+
+  .manage-users-table tbody tr.mobile-collapsible-row.is-expanded td.mobile-user-summary {
+    display: table-cell;
+    border-bottom: 1px solid rgba(11, 79, 138, 0.12);
+  }
+}
+
 @media (max-width: 700px) {
   body.review-logs-page #logsTable tr.mobile-collapsible-row,
   .manage-users-table tbody tr.mobile-collapsible-row {
@@ -9041,6 +9112,7 @@ body.leaderboard-page .leaderboard-orientation-hint {
   body.review-logs-page .mobile-log-card-date,
   .manage-users-table .mobile-user-card-meta {
     flex: 0 1 auto;
+    grid-column: auto;
     min-width: 0;
     color: #65788b;
     font-size: 0.86rem;

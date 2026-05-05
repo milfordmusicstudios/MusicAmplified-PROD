@@ -18,6 +18,7 @@ let liveSyncChannel = null;
 let liveSyncStudioId = "";
 let refreshQueuedTimer = null;
 let mobileUsersPage = 1;
+let expandedUserId = null;
 const MOBILE_USERS_PAGE_SIZE = 10;
 const isMobileManageLayout = () => window.matchMedia?.("(max-width: 700px)")?.matches || window.innerWidth <= 700;
 
@@ -328,6 +329,40 @@ function normalizeInstrumentList(value) {
   return normalized;
 }
 
+function dedupeCaseInsensitiveList(value) {
+  const seen = new Set();
+  const deduped = [];
+  normalizeArray(value).forEach(item => {
+    const key = String(item || "").toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    deduped.push(item);
+  });
+  return deduped;
+}
+
+function normalizeInstrumentOptionsList(options) {
+  const seen = new Set();
+  const normalized = [];
+  ensureArray(options).forEach(option => {
+    const raw = option && typeof option === "object"
+      ? (option.value ?? option.label ?? "")
+      : option;
+    const canonical = normalizeInstrumentName(raw);
+    if (!canonical) return;
+    const key = canonical.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    normalized.push({ value: canonical, label: canonical });
+  });
+  return normalized.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function normalizeTagValuesForField(field, value) {
+  if (field === "instrument") return normalizeInstrumentList(value);
+  return dedupeCaseInsensitiveList(value);
+}
+
 function arraysEqual(a, b) {
   const normA = normalizeArray(a).map(item => String(item).toLowerCase()).sort();
   const normB = normalizeArray(b).map(item => String(item).toLowerCase()).sort();
@@ -413,9 +448,7 @@ function setInputValueFromUser(input, user) {
   const field = input.dataset.field;
   if (!field) return;
   if (input instanceof HTMLElement && input.classList.contains("tag-picker")) {
-    const selected = field === "instrument"
-      ? normalizeInstrumentList(getUserFieldValue(user, field))
-      : normalizeArray(getUserFieldValue(user, field));
+    const selected = normalizeTagValuesForField(field, getUserFieldValue(user, field));
     input.dataset.selected = JSON.stringify(selected);
     input.dataset.open = "false";
     renderTagPicker(input);
@@ -483,15 +516,7 @@ function buildOptionLists(users) {
     .sort((a, b) => a.label.localeCompare(b.label));
 
   teacherOptions = Array.from(teacherMap.values()).sort((a, b) => a.label.localeCompare(b.label));
-
-  instrumentOptions = Array.from(instrumentSet)
-    .map(normalizeInstrumentName)
-    .filter(Boolean)
-    .filter((instrument, index, list) =>
-      list.findIndex(item => item.toLowerCase() === instrument.toLowerCase()) === index
-    )
-    .map(instrument => ({ value: instrument, label: instrument }))
-    .sort((a, b) => a.label.localeCompare(b.label));
+  instrumentOptions = normalizeInstrumentOptionsList(Array.from(instrumentSet));
 }
 
 async function loadTeacherDirectory(studioId) {
@@ -688,8 +713,9 @@ function createMultiSelectCell(user, field, options, cssClass) {
   picker.dataset.open = "false";
   picker.dataset.allowCustom = field === "instrument" ? "true" : "false";
   picker.hidden = false;
-
-  picker._options = options.map(option => ({ value: String(option.value), label: String(option.label) }));
+  picker._options = field === "instrument"
+    ? normalizeInstrumentOptionsList(options)
+    : options.map(option => ({ value: String(option.value), label: String(option.label) }));
 
   const tags = document.createElement("div");
   tags.className = "tag-picker-tags";
@@ -721,7 +747,7 @@ function createMultiSelectCell(user, field, options, cssClass) {
         return;
       }
       if (!selectedIncludesValue(selected, value)) selected.push(value);
-      picker.dataset.selected = JSON.stringify(selected);
+      picker.dataset.selected = JSON.stringify(normalizeTagValuesForField(field, selected));
       picker.dataset.open = "false";
       renderTagPicker(picker);
       persistPickerChange(picker);
@@ -732,7 +758,7 @@ function createMultiSelectCell(user, field, options, cssClass) {
     if (removeBtn) {
       const removeKey = String(removeBtn.dataset.value || "").toLowerCase();
       const selected = getTagPickerSelected(picker).filter(value => String(value).toLowerCase() !== removeKey);
-      picker.dataset.selected = JSON.stringify(selected);
+      picker.dataset.selected = JSON.stringify(normalizeTagValuesForField(field, selected));
       picker.dataset.open = "false";
       renderTagPicker(picker);
       persistPickerChange(picker);
@@ -747,7 +773,7 @@ function createMultiSelectCell(user, field, options, cssClass) {
 
       const optionsList = Array.isArray(picker._options) ? picker._options : [];
       const value = field === "instrument"
-        ? normalizeInstrumentName(raw, optionsList.map(option => option.label))
+        ? normalizeInstrumentName(raw)
         : raw;
       if (!value || (field === "instrument" && !isAllowedInstrument(value))) {
         renderStatus(`"${raw}" is not in the allowed instrument list.`, true);
@@ -757,7 +783,9 @@ function createMultiSelectCell(user, field, options, cssClass) {
       const existing = optionsList.find(option => String(option.value).toLowerCase() === value.toLowerCase());
       if (!existing) {
         optionsList.push({ value, label: value });
-        picker._options = optionsList.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+        picker._options = field === "instrument"
+          ? normalizeInstrumentOptionsList(optionsList)
+          : optionsList.sort((a, b) => String(a.label).localeCompare(String(b.label)));
       }
 
       const selected = getTagPickerSelected(picker);
@@ -766,7 +794,7 @@ function createMultiSelectCell(user, field, options, cssClass) {
         return;
       }
       selected.push(value);
-      picker.dataset.selected = JSON.stringify(selected);
+      picker.dataset.selected = JSON.stringify(normalizeTagValuesForField(field, selected));
       if (input) input.value = "";
       picker.dataset.open = "false";
       renderTagPicker(picker);
@@ -788,7 +816,13 @@ function createMultiSelectCell(user, field, options, cssClass) {
 function getTagPickerSelected(picker) {
   try {
     const parsed = JSON.parse(picker.dataset.selected || "[]");
-    return Array.isArray(parsed) ? parsed.map(item => String(item)) : [];
+    const selected = Array.isArray(parsed) ? parsed.map(item => String(item)) : [];
+    const field = String(picker?.dataset?.field || "");
+    const normalized = normalizeTagValuesForField(field, selected);
+    if (JSON.stringify(selected) !== JSON.stringify(normalized)) {
+      picker.dataset.selected = JSON.stringify(normalized);
+    }
+    return normalized;
   } catch {
     return [];
   }
@@ -820,10 +854,20 @@ function persistPickerChange(picker) {
 
 function renderTagPicker(picker) {
   if (!picker) return;
-  const selected = getTagPickerSelected(picker);
+  const field = String(picker.dataset.field || "");
+  let selected = getTagPickerSelected(picker);
   const tagsEl = picker.querySelector(".tag-picker-tags");
   const listEl = picker.querySelector(".tag-picker-list");
   if (!tagsEl || !listEl) return;
+  if (field === "instrument") {
+    picker._options = normalizeInstrumentOptionsList([
+      ...(Array.isArray(picker._options) ? picker._options : []),
+      ...instrumentOptions,
+      ...CANONICAL_INSTRUMENTS
+    ]);
+  }
+  selected = normalizeTagValuesForField(field, selected);
+  picker.dataset.selected = JSON.stringify(selected);
 
   tagsEl.innerHTML = "";
   const isOpen = picker.dataset.open === "true";
@@ -859,7 +903,15 @@ function renderTagPicker(picker) {
     });
   }
 
-  const available = (picker._options || []).filter(option => !selectedIncludesValue(selected, String(option.value)));
+  const safeOptions = field === "instrument"
+    ? normalizeInstrumentOptionsList(picker._options || [])
+    : ensureArray(picker._options || [])
+      .map(option => ({ value: String(option.value), label: String(option.label ?? option.value) }))
+      .filter((option, index, list) =>
+        list.findIndex(item => item.value.toLowerCase() === option.value.toLowerCase()) === index
+      );
+  picker._options = safeOptions;
+  const available = safeOptions.filter(option => !selectedIncludesValue(selected, String(option.value)));
   listEl.innerHTML = "";
   if (picker.dataset.allowCustom === "true") {
     const customWrap = document.createElement("div");
@@ -1209,6 +1261,9 @@ function renderUsers(totalRows = null) {
 
   const filteredUsers = applyFilters(allUsers);
   const filtered = getSortedUsers(filteredUsers);
+  if (expandedUserId && !filtered.some(user => String(user.id) === String(expandedUserId))) {
+    expandedUserId = null;
+  }
   const total = Number.isFinite(totalRows) ? totalRows : allUsers.length;
   const mobileLayout = isMobileManageLayout();
   const totalPages = Math.max(1, Math.ceil(filtered.length / MOBILE_USERS_PAGE_SIZE));
@@ -1232,9 +1287,12 @@ function renderUsers(totalRows = null) {
 
   visibleRows.forEach(user => {
     const tr = document.createElement("tr");
+    const isExpanded = String(expandedUserId || "") === String(user.id || "");
     tr.dataset.userId = String(user.id || "");
-    tr.dataset.expanded = "false";
-    tr.classList.add("mobile-collapsible-row", "is-collapsed");
+    tr.dataset.expanded = isExpanded ? "true" : "false";
+    tr.classList.add("mobile-collapsible-row");
+    tr.classList.toggle("is-expanded", isExpanded);
+    tr.classList.toggle("is-collapsed", !isExpanded);
     tr.classList.toggle("is-inactive", Boolean(user.deactivated_at));
 
     const summaryCell = document.createElement("td");
@@ -1243,11 +1301,19 @@ function renderUsers(totalRows = null) {
     const summaryButton = document.createElement("button");
     summaryButton.type = "button";
     summaryButton.className = "mobile-user-card-toggle";
-    summaryButton.setAttribute("aria-expanded", "false");
+    summaryButton.setAttribute("aria-expanded", isExpanded ? "true" : "false");
     const name = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "User";
-    summaryButton.innerHTML = `
-      <span class="mobile-user-card-name">${name}</span>
-    `;
+    const primaryInstrument = normalizeInstrumentList(user.instrument)[0] || "No instrument";
+    const statusText = user.deactivated_at ? "Inactive" : "Active";
+    const meta = `${primaryInstrument} | ${user.email || "No email"} | ${statusText}`;
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "mobile-user-card-name";
+    nameSpan.textContent = name;
+    const metaSpan = document.createElement("span");
+    metaSpan.className = "mobile-user-card-meta";
+    metaSpan.textContent = meta;
+    summaryButton.appendChild(nameSpan);
+    summaryButton.appendChild(metaSpan);
     summaryCell.appendChild(summaryButton);
     tr.appendChild(summaryCell);
 
@@ -1273,11 +1339,18 @@ function bindMobileUserCollapseToggles() {
     button.addEventListener("click", () => {
       const row = button.closest("tr");
       if (!row) return;
+      const userId = String(row.dataset.userId || "");
       const expanded = row.dataset.expanded === "true";
-      row.dataset.expanded = expanded ? "false" : "true";
-      row.classList.toggle("is-collapsed", expanded);
-      row.classList.toggle("is-expanded", !expanded);
-      button.setAttribute("aria-expanded", String(!expanded));
+      expandedUserId = expanded ? null : userId;
+      document.querySelectorAll(".manage-users-table tbody tr.mobile-collapsible-row").forEach(currentRow => {
+        const currentId = String(currentRow.dataset.userId || "");
+        const isExpanded = Boolean(expandedUserId) && currentId === expandedUserId;
+        currentRow.dataset.expanded = isExpanded ? "true" : "false";
+        currentRow.classList.toggle("is-expanded", isExpanded);
+        currentRow.classList.toggle("is-collapsed", !isExpanded);
+        const toggle = currentRow.querySelector(".mobile-user-card-toggle");
+        if (toggle) toggle.setAttribute("aria-expanded", String(isExpanded));
+      });
     });
   });
 }
