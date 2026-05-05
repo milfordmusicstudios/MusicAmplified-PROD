@@ -1,6 +1,6 @@
 import { supabase } from './supabaseClient.js';
 import { ensureStudioContextAndRoute } from './studio-routing.js';
-import { clearAppSessionCache, ensureUserRow, getAuthUserId, getCategoryDefaultPoints, getViewerContext, renderActiveStudentHeader } from './utils.js';
+import { clearAppSessionCache, ensureUserRow, fetchStudentLevelSnapshots, getAuthUserId, getCategoryDefaultPoints, getViewerContext, recalculateUsersAfterApprovedBatch, renderActiveStudentHeader } from './utils.js';
 import { getActiveProfileId, setActiveProfileId, persistLastActiveStudent, getLastActiveStudent, clearLastActiveStudent } from './active-profile.js';
 import { getAccountProfiles, renderAccountProfileList, hasRole, loadLinkedStudentsForParent } from './account-profiles.js';
 import { initStaffChallengesUI } from './challenges-ui.js';
@@ -136,15 +136,13 @@ function isStudentTutorialEligible({ viewerContext, profile } = {}) {
 function scheduleStudentTutorial({ viewerContext, profileId, profile } = {}) {
   if (!isStudentTutorialEligible({ viewerContext, profile })) return;
   if (!profileId) return;
-  const userId = viewerContext?.viewerUserId || profileId;
 
   window.setTimeout(async () => {
     if (!isStudentTutorialEligible({ viewerContext, profile })) return;
     try {
       if (!studentTutorial) {
-        studentTutorial = createStudentHomeTutorial({ userId, profileId });
+        studentTutorial = createStudentHomeTutorial({ profileId });
       } else {
-        studentTutorial.userId = userId;
         studentTutorial.profileId = profileId;
       }
       window.AA_replayStudentTutorial = () => studentTutorial.start({ force: true });
@@ -167,16 +165,14 @@ function isTeacherAdminTutorialEligible({ viewerContext } = {}) {
 function scheduleTeacherAdminTutorial({ viewerContext } = {}) {
   if (!isTeacherAdminTutorialEligible({ viewerContext })) return;
   const profileId = viewerContext?.viewerUserId || viewerContext?.activeProfileId || null;
-  const userId = viewerContext?.viewerUserId || profileId;
   if (!profileId) return;
 
   window.setTimeout(async () => {
     if (!isTeacherAdminTutorialEligible({ viewerContext })) return;
     try {
       if (!teacherAdminTutorial) {
-        teacherAdminTutorial = createTeacherAdminTutorial({ userId, profileId });
+        teacherAdminTutorial = createTeacherAdminTutorial({ profileId });
       } else {
-        teacherAdminTutorial.userId = userId;
         teacherAdminTutorial.profileId = profileId;
       }
       window.AA_replayTeacherAdminTutorial = () => teacherAdminTutorial.start({ force: true });
@@ -1355,12 +1351,11 @@ function resetModalScroll(modalEl) {
   scroller.scrollTop = 0;
 }
 
-function openStudentModal({ title, bodyHtml, submitLabel, onSubmit, clearLabel, onClear }) {
+function openStudentModal({ title, bodyHtml, submitLabel, onSubmit }) {
   const overlay = qs("studentLogModalOverlay");
   const titleEl = qs("studentLogModalTitle");
   const bodyEl = qs("studentLogModalBody");
   const submitBtn = qs("studentLogModalSubmit");
-  const clearBtn = qs("studentLogModalClear");
   const cancelBtn = qs("studentLogModalCancel");
   const closeBtn = qs("studentLogModalClose");
   if (!overlay || !titleEl || !bodyEl || !submitBtn || !cancelBtn || !closeBtn) return;
@@ -1372,19 +1367,6 @@ function openStudentModal({ title, bodyHtml, submitLabel, onSubmit, clearLabel, 
     e.preventDefault();
     await onSubmit();
   };
-  if (clearBtn) {
-    if (typeof onClear === "function") {
-      clearBtn.textContent = clearLabel || "Clear Form";
-      clearBtn.style.display = "";
-      clearBtn.onclick = (e) => {
-        e.preventDefault();
-        onClear();
-      };
-    } else {
-      clearBtn.style.display = "none";
-      clearBtn.onclick = null;
-    }
-  }
   cancelBtn.onclick = (e) => {
     e.preventDefault();
     closeStudentModal();
@@ -1427,10 +1409,12 @@ async function checkPracticeLoggedToday(userId) {
   return Array.isArray(data) && data.length > 0;
 }
 
-async function applyApprovedRecalc(userId) {
-  const result = await calculateXpAndLevel(userId);
+async function applyApprovedRecalc(userId, recalculatedResult = null) {
+  const result = recalculatedResult || await calculateXpAndLevel(userId);
   if (!result || !currentProfile || currentProfile.id !== userId) return;
-  const nextLevel = result.currentLevel || currentLevelRow || (await loadLevel(currentProfile.level || 1));
+  const nextLevel = result.currentLevel?.name
+    ? result.currentLevel
+    : await loadLevel(result.currentLevel?.id || currentProfile.level || 1);
   currentProfile = {
     ...currentProfile,
     points: result.totalPoints,
@@ -1543,34 +1527,50 @@ function updatePendingProgressFill() {
 async function loadEarnedBadges(userId, studioId) {
   if (!userId || !studioId) return [];
 
-  try {
-    await recomputeBadgesForStudent(userId, studioId);
-  } catch (error) {
-    console.warn("[Badges][Recompute] before earned badge load failed", error);
+  const joined = await supabase
+    .from("user_badges")
+    .select("badge_slug,earned_at,stars,badge_definitions(name,family,tier,sort_order)")
+    .eq("user_id", userId)
+    .eq("studio_id", studioId);
+
+  if (!joined.error) {
+    const rows = joined.data || [];
+    rows.sort((a, b) => {
+      const af = a?.badge_definitions?.family || "";
+      const bf = b?.badge_definitions?.family || "";
+      if (af !== bf) return af.localeCompare(bf);
+      const at = Number(a?.badge_definitions?.tier || 0);
+      const bt = Number(b?.badge_definitions?.tier || 0);
+      if (at !== bt) return at - bt;
+      return String(a.badge_slug || "").localeCompare(String(b.badge_slug || ""));
+    });
+    return rows;
   }
 
-  const { data, error } = await supabase.rpc("get_student_badge_catalog", {
-    p_studio_id: studioId,
-    p_user_id: userId
-  });
-  if (error) {
-    console.error("[Home] Failed loading user badges", error);
+  const base = await supabase
+    .from("user_badges")
+    .select("badge_slug,earned_at,stars")
+    .eq("user_id", userId)
+    .eq("studio_id", studioId);
+  if (base.error) {
+    console.error("[Home] Failed loading user badges", base.error);
     return [];
   }
 
-  return (Array.isArray(data) ? data : [])
-    .filter((row) => row.unlocked)
-    .map((row) => ({
-      badge_slug: row.slug,
-      earned_at: row.earned_at,
-      stars: row.stars,
-      badge_definitions: {
-        name: row.name,
-        family: row.family,
-        tier: row.tier,
-        sort_order: row.sort_order
-      }
-    }))
+  const slugs = Array.from(new Set((base.data || []).map((r) => String(r.badge_slug || "")).filter(Boolean)));
+  if (!slugs.length) return [];
+  const defs = await supabase
+    .from("badge_definitions")
+    .select("slug,name,family,tier,sort_order")
+    .in("slug", slugs);
+  if (defs.error) {
+    console.error("[Home] Failed loading badge definitions", defs.error);
+    return (base.data || []).map((row) => ({ ...row, badge_definitions: null }));
+  }
+
+  const defMap = new Map((defs.data || []).map((d) => [String(d.slug), d]));
+  return (base.data || [])
+    .map((row) => ({ ...row, badge_definitions: defMap.get(String(row.badge_slug || "")) || null }))
     .sort((a, b) => {
       const af = a?.badge_definitions?.family || "";
       const bf = b?.badge_definitions?.family || "";
@@ -1728,14 +1728,23 @@ function getClientBadgeProgress(definition, metrics) {
 async function loadNextUpBadgeFromClient({ userId, studioId, recentBadge = null, onOpenModal = null, onDebug = null, reason = "api-fallback" } = {}) {
   const recomputeResult = await recomputeBadgesForStudent(userId, studioId);
   const metrics = recomputeResult?.metrics || {};
-  const { data: catalogRows, error: catalogError } = await supabase.rpc("get_student_badge_catalog", {
-    p_studio_id: studioId,
-    p_user_id: userId
-  });
-  if (catalogError) throw catalogError;
+  const [defsResult, earnedResult] = await Promise.all([
+    supabase
+      .from("badge_definitions")
+      .select("slug,name,family,tier,criteria,is_active")
+      .eq("is_active", true),
+    supabase
+      .from("user_badges")
+      .select("badge_slug")
+      .eq("studio_id", studioId)
+      .eq("user_id", userId)
+  ]);
+  if (defsResult.error) throw defsResult.error;
+  if (earnedResult.error) throw earnedResult.error;
 
-  const candidates = (Array.isArray(catalogRows) ? catalogRows : [])
-    .filter((definition) => !definition.unlocked)
+  const earnedSlugs = new Set((earnedResult.data || []).map((row) => String(row.badge_slug || "")));
+  const candidates = (defsResult.data || [])
+    .filter((definition) => !earnedSlugs.has(String(definition.slug || "")))
     .map((definition) => {
       const progress = getClientBadgeProgress(definition, metrics);
       return {
@@ -2006,8 +2015,8 @@ async function refreshActiveStudentData({ userId, fallbackProfile } = {}) {
   if (profile) {
     persistActiveStudentId(profile.id || activeStudentId);
     localStorage.setItem("loggedInUser", JSON.stringify(profile));
-    const { totalPoints, currentLevel } = await calculateXpAndLevel(activeStudentId);
-    const resolvedLevel = currentLevel || (await loadLevel(profile.level || 1));
+    const totalPoints = Number(profile.points || 0);
+    const resolvedLevel = await loadLevel(profile.level || 1);
     currentProfile = {
       ...profile,
       points: totalPoints,
@@ -2164,6 +2173,13 @@ async function insertLogs(rows, { approved }) {
     return false;
   }
 
+  const approvedUserIds = approved
+    ? Array.from(new Set(payload.map((row) => String(row.userId || "").trim()).filter(Boolean)))
+    : [];
+  const levelSnapshotsBefore = approvedUserIds.length
+    ? await fetchStudentLevelSnapshots(approvedUserIds)
+    : new Map();
+
   const results = await Promise.all(rpcPayloads.map((requestPayload) => supabase.rpc("insert_log", requestPayload)));
 
   const firstError = results.find(r => r.error)?.error || null;
@@ -2185,8 +2201,14 @@ async function insertLogs(rows, { approved }) {
     }
     return false;
   }
-  if (approved && rows.length > 0) {
-    await applyApprovedRecalc(rows[0].userId);
+  if (approved && approvedUserIds.length > 0) {
+    const recalcResults = await recalculateUsersAfterApprovedBatch(approvedUserIds, levelSnapshotsBefore, {
+      studioId
+    });
+    const activeResult = currentProfile?.id ? recalcResults.get(String(currentProfile.id)) : null;
+    if (activeResult) {
+      await applyApprovedRecalc(currentProfile.id, activeResult);
+    }
   }
   return true;
 }
@@ -2301,13 +2323,6 @@ async function openPastPracticeModal(userId) {
       </div>
       <div class="status-note">Approved</div>
     `,
-    clearLabel: "Clear Form",
-    onClear: () => {
-      selectedDates.clear();
-      const notesEl = qs("practiceNotes");
-      if (notesEl) notesEl.value = "";
-      renderCalendar();
-    },
     onSubmit: async () => {
       const notes = qs("practiceNotes")?.value?.trim() || "";
       const selected = Array.from(selectedDates);
@@ -2776,7 +2791,6 @@ function renderStaffQuickLogShell() {
 
         <div class="button-row" style="margin-top:10px;">
           <button id="staffQuickLogSubmit" type="submit" class="blue-button staff-submit" disabled>Submit Points</button>
-          <button id="staffQuickLogClear" type="button" class="blue-button staff-clear-form">Clear Form</button>
         </div>
       </form>
     </section>
@@ -2790,7 +2804,7 @@ async function loadCategoriesForStudio(studioId) {
     .select('*')
     .order('id', { ascending: true });
   if (error || !Array.isArray(data)) return { data: [], error };
-  const blockedCategoryNames = new Set(["batch_practice", "practice_batch"]);
+  const blockedCategoryNames = new Set(["batch_practice"]);
   const filtered = data.filter(category => !blockedCategoryNames.has(String(category?.name || "").toLowerCase()));
   return { data: filtered, error: null };
 }
@@ -2918,7 +2932,6 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
   const msgEl = document.getElementById('staffQuickLogMsg');
   const errorEl = document.getElementById('staffQuickLogError');
   const submitBtn = document.getElementById('staffQuickLogSubmit');
-  const clearBtn = document.getElementById('staffQuickLogClear');
   const selectedDates = new Set();
   const selectedStudentIds = new Set();
   const categoryRowsByName = new Map();
@@ -3098,31 +3111,6 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
     studentDropdown.removeAttribute('hidden');
   };
 
-  const clearStaffQuickLogForm = (students = []) => {
-    selectedDates.clear();
-    selectedStudentIds.clear();
-    practiceDatesByStudentId = new Map();
-    practiceDatesRequestToken++;
-    if (form) form.reset();
-    if (studentSearchInput) studentSearchInput.value = '';
-    if (studentDropdown) studentDropdown.setAttribute('hidden', '');
-    if (calendarPanel) calendarPanel.setAttribute('hidden', '');
-    if (msgEl) {
-      msgEl.textContent = '';
-      msgEl.style.display = 'none';
-    }
-    if (errorEl) {
-      errorEl.textContent = '';
-      errorEl.style.display = 'none';
-    }
-    syncStudentSelect();
-    renderSelectedStudents(students);
-    renderStudentDropdown(students);
-    syncPracticePoints();
-    renderStaffCalendar();
-    updateStaffCalendarToggle();
-  };
-
   const setError = (message) => {
     if (!errorEl) return;
     errorEl.textContent = message;
@@ -3299,8 +3287,6 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
         studentSearchInput.addEventListener('focus', () => renderStudentDropdown(sortedStudents));
       }
 
-      clearBtn?.addEventListener('click', () => clearStaffQuickLogForm(sortedStudents));
-
       document.addEventListener('click', (event) => {
         if (!studentPicker || !studentDropdown) return;
         if (!studentPicker.contains(event.target)) {
@@ -3423,6 +3409,12 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
     }
 
     const includeApproval = isStaff;
+    const approvedUserIds = includeApproval
+      ? Array.from(new Set(rowsToInsert.map((row) => String(row.userId || "").trim()).filter(Boolean)))
+      : [];
+    const levelSnapshotsBefore = approvedUserIds.length
+      ? await fetchStudentLevelSnapshots(approvedUserIds)
+      : new Map();
     const result = await insertLogsWithApproval(rowsToInsert, includeApproval);
     if (!result.ok) {
       console.error('[QuickLog] insert failed', result.error);
@@ -3432,6 +3424,12 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
         msgEl.style.color = '#c62828';
       }
       return;
+    }
+
+    if (approvedUserIds.length) {
+      await recalculateUsersAfterApprovedBatch(approvedUserIds, levelSnapshotsBefore, {
+        studioId
+      });
     }
 
     if (isPracticeCategory) {

@@ -17,10 +17,6 @@ let statusFilter = "active";
 let liveSyncChannel = null;
 let liveSyncStudioId = "";
 let refreshQueuedTimer = null;
-let mobileUsersPage = 1;
-let expandedUserId = null;
-const MOBILE_USERS_PAGE_SIZE = 10;
-const isMobileManageLayout = () => window.matchMedia?.("(max-width: 700px)")?.matches || window.innerWidth <= 700;
 
 const EDITABLE_TEXT_FIELD_TYPES = {
   firstName: "text",
@@ -51,65 +47,7 @@ const COLUMN_DEFS = {
 };
 
 const ROLE_FALLBACKS = ["admin", "teacher"];
-const CANONICAL_INSTRUMENTS = [
-  "Piano",
-  "Voice",
-  "Guitar",
-  "Drums",
-  "Violin",
-  "Viola",
-  "Cello",
-  "Bass",
-  "Ukulele",
-  "Banjo",
-  "Mandolin",
-  "Flute",
-  "Clarinet",
-  "Saxophone",
-  "Trumpet",
-  "Trombone",
-  "French Horn",
-  "Tuba",
-  "Percussion"
-];
-
-const INSTRUMENT_ALIASES = new Map([
-  ["piano", "Piano"],
-  ["voice", "Voice"],
-  ["vocals", "Voice"],
-  ["vocal", "Voice"],
-  ["singing", "Voice"],
-  ["guitar", "Guitar"],
-  ["drums", "Drums"],
-  ["drum", "Drums"],
-  ["violin", "Violin"],
-  ["viola", "Viola"],
-  ["cello", "Cello"],
-  ["bass", "Bass"],
-  ["bass guitar", "Bass"],
-  ["ukulele", "Ukulele"],
-  ["uke", "Ukulele"],
-  ["banjo", "Banjo"],
-  ["mandolin", "Mandolin"],
-  ["flute", "Flute"],
-  ["clarinet", "Clarinet"],
-  ["sax", "Saxophone"],
-  ["saxophone", "Saxophone"],
-  ["trumpet", "Trumpet"],
-  ["trombone", "Trombone"],
-  ["french horn", "French Horn"],
-  ["horn", "French Horn"],
-  ["tuba", "Tuba"],
-  ["percussion", "Percussion"]
-]);
-
-const BLOCKED_INSTRUMENT_VALUES = new Set([
-  "test",
-  "beginner piano",
-  "beginner drums",
-  "beginner band",
-  "flugelhorn"
-]);
+const INSTRUMENT_FALLBACKS = ["piano", "voice", "violin", "guitar", "drums"];
 
 let roleOptions = [];
 let teacherOptions = [];
@@ -117,55 +55,6 @@ let instrumentOptions = [];
 let teacherDirectoryUsers = [];
 
 const STATUS_LOADING = "Loading users...";
-
-function normalizeRoles(raw) {
-  if (Array.isArray(raw)) {
-    return raw.map(role => String(role || "").trim().toLowerCase()).filter(Boolean);
-  }
-  if (typeof raw === "string") {
-    const trimmed = raw.trim();
-    if (!trimmed) return [];
-    try {
-      return normalizeRoles(JSON.parse(trimmed));
-    } catch {
-      return [trimmed.toLowerCase()];
-    }
-  }
-  return [];
-}
-
-function uniqueRoles(...roleGroups) {
-  return Array.from(new Set(roleGroups.flatMap(normalizeRoles)));
-}
-
-function serializeQueryError(error) {
-  if (!error) return null;
-  return {
-    message: error.message || String(error),
-    code: error.code || null,
-    details: error.details || null,
-    hint: error.hint || null
-  };
-}
-
-async function loadStudioMembershipRoles(authUserId, studioId) {
-  if (!authUserId || !studioId) {
-    return { roles: [], error: null, row: null };
-  }
-
-  const { data, error } = await supabase
-    .from("studio_members")
-    .select("roles")
-    .eq("user_id", authUserId)
-    .eq("studio_id", studioId)
-    .maybeSingle();
-
-  return {
-    roles: normalizeRoles(data?.roles),
-    error,
-    row: data || null
-  };
-}
 
 function normalizeTab(value) {
   const tab = String(value || "").trim().toLowerCase();
@@ -245,7 +134,6 @@ function bindManageUsersTabs() {
       if (nextTab === activeTab) return;
       activeTab = nextTab;
       statusFilter = "active";
-      mobileUsersPage = 1;
       await refreshManageUsers();
     });
   });
@@ -259,7 +147,6 @@ function bindStatusToggle() {
       const nextStatus = normalizeStatusFilter(button.dataset.status);
       if (nextStatus === statusFilter) return;
       statusFilter = nextStatus;
-      mobileUsersPage = 1;
       await refreshManageUsers();
     });
   });
@@ -287,85 +174,9 @@ function normalizeArray(value) {
     .filter(Boolean);
 }
 
-function getInstrumentKey(value) {
-  return String(value || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .replace(/[.,;:!?]+$/g, "")
-    .trim()
-    .toLowerCase();
-}
-
-// Instruments are intentionally restricted to a canonical studio list so the UI
-// cannot reintroduce case variants or placeholder values into users.instrument.
-function normalizeInstrumentName(input, existingOptions = CANONICAL_INSTRUMENTS) {
-  const key = getInstrumentKey(input);
-  if (!key || BLOCKED_INSTRUMENT_VALUES.has(key)) return "";
-
-  const options = normalizeArray(existingOptions);
-  const existingMatch = options.find(option => getInstrumentKey(option) === key);
-  if (existingMatch) {
-    return INSTRUMENT_ALIASES.get(getInstrumentKey(existingMatch)) || existingMatch;
-  }
-
-  return INSTRUMENT_ALIASES.get(key) || "";
-}
-
-function isAllowedInstrument(input) {
-  return Boolean(normalizeInstrumentName(input));
-}
-
-function normalizeInstrumentList(value) {
-  const seen = new Set();
-  const normalized = [];
-  normalizeArray(value).forEach(item => {
-    const canonical = normalizeInstrumentName(item);
-    if (!canonical) return;
-    const key = canonical.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    normalized.push(canonical);
-  });
-  return normalized;
-}
-
-function dedupeCaseInsensitiveList(value) {
-  const seen = new Set();
-  const deduped = [];
-  normalizeArray(value).forEach(item => {
-    const key = String(item || "").toLowerCase();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    deduped.push(item);
-  });
-  return deduped;
-}
-
-function normalizeInstrumentOptionsList(options) {
-  const seen = new Set();
-  const normalized = [];
-  ensureArray(options).forEach(option => {
-    const raw = option && typeof option === "object"
-      ? (option.value ?? option.label ?? "")
-      : option;
-    const canonical = normalizeInstrumentName(raw);
-    if (!canonical) return;
-    const key = canonical.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    normalized.push({ value: canonical, label: canonical });
-  });
-  return normalized.sort((a, b) => a.label.localeCompare(b.label));
-}
-
-function normalizeTagValuesForField(field, value) {
-  if (field === "instrument") return normalizeInstrumentList(value);
-  return dedupeCaseInsensitiveList(value);
-}
-
 function arraysEqual(a, b) {
-  const normA = normalizeArray(a).map(item => String(item).toLowerCase()).sort();
-  const normB = normalizeArray(b).map(item => String(item).toLowerCase()).sort();
+  const normA = normalizeArray(a).sort();
+  const normB = normalizeArray(b).sort();
   if (normA.length !== normB.length) return false;
   for (let i = 0; i < normA.length; i++) {
     if (normA[i] !== normB[i]) return false;
@@ -404,10 +215,6 @@ function formatList(value) {
   return normalized.length ? normalized.join(", ") : "-";
 }
 
-function formatInstrumentList(value) {
-  return formatList(normalizeInstrumentList(value));
-}
-
 function getUserFieldValue(user, field) {
   switch (field) {
     case "firstName":
@@ -421,7 +228,7 @@ function getUserFieldValue(user, field) {
     case "teacherIds":
       return ensureArray(user.teacherIds);
     case "instrument":
-      return normalizeInstrumentList(user.instrument);
+      return ensureArray(user.instrument);
     default:
       return user[field] || "";
   }
@@ -438,7 +245,7 @@ function getDisplayValue(user, field) {
     const teacherNames = ensureArray(getUserFieldValue(user, "teacherIds")).map(getTeacherLabelById);
     return formatList(teacherNames);
   }
-  if (field === "instrument") return formatInstrumentList(getUserFieldValue(user, "instrument"));
+  if (field === "instrument") return formatList(getUserFieldValue(user, "instrument"));
   if (field === "points" || field === "level") return user[field] ?? "-";
   if (field === "active") return user.deactivated_at ? "Inactive" : "Active";
   return getUserFieldValue(user, field) || "-";
@@ -448,7 +255,7 @@ function setInputValueFromUser(input, user) {
   const field = input.dataset.field;
   if (!field) return;
   if (input instanceof HTMLElement && input.classList.contains("tag-picker")) {
-    const selected = normalizeTagValuesForField(field, getUserFieldValue(user, field));
+    const selected = normalizeArray(getUserFieldValue(user, field));
     input.dataset.selected = JSON.stringify(selected);
     input.dataset.open = "false";
     renderTagPicker(input);
@@ -481,13 +288,13 @@ function buildOptionLists(users) {
       if (normalizedId) assignedTeacherIds.add(normalizedId);
     });
     ensureArray(user.instrument).forEach(inst => {
-      const value = normalizeInstrumentName(inst);
+      const value = String(inst || "").trim();
       if (value) instrumentSet.add(value);
     });
   });
 
   ROLE_FALLBACKS.forEach(role => roleSet.add(role));
-  CANONICAL_INSTRUMENTS.forEach(inst => instrumentSet.add(inst));
+  INSTRUMENT_FALLBACKS.forEach(inst => instrumentSet.add(inst));
 
   const teacherSourceUsers = teacherDirectoryUsers.length ? teacherDirectoryUsers : users;
   teacherSourceUsers.forEach(user => {
@@ -516,7 +323,10 @@ function buildOptionLists(users) {
     .sort((a, b) => a.label.localeCompare(b.label));
 
   teacherOptions = Array.from(teacherMap.values()).sort((a, b) => a.label.localeCompare(b.label));
-  instrumentOptions = normalizeInstrumentOptionsList(Array.from(instrumentSet));
+
+  instrumentOptions = Array.from(instrumentSet)
+    .map(instrument => ({ value: instrument, label: instrument }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 async function loadTeacherDirectory(studioId) {
@@ -665,23 +475,13 @@ function createEditableTextCell(user, field, type = "text") {
   span.className = "cell-text";
   span.dataset.field = field;
   span.textContent = getDisplayValue(user, field);
-  span.hidden = true;
 
   const input = document.createElement("input");
   input.className = "cell-input";
   input.dataset.field = field;
   input.type = type;
-  input.hidden = false;
+  input.hidden = true;
   setInputValueFromUser(input, user);
-  input.addEventListener("change", () => {
-    const row = td.closest("tr");
-    if (row) void saveRow(row);
-  });
-  input.addEventListener("keydown", event => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    input.blur();
-  });
 
   if (field !== "firstName") {
     td.appendChild(span);
@@ -691,6 +491,50 @@ function createEditableTextCell(user, field, type = "text") {
 
   const wrapper = document.createElement("div");
   wrapper.className = "first-name-wrapper";
+
+  const pencilBtn = document.createElement("button");
+  pencilBtn.type = "button";
+  pencilBtn.className = "edit-pencil";
+  pencilBtn.setAttribute("aria-label", "Edit user");
+  pencilBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M5 20h14" />
+      <path d="M17.4 4.6a2 2 0 0 1 2.8 2.8l-9.7 9.7H7v-4.5z" />
+    </svg>
+  `;
+  pencilBtn.addEventListener("click", event => {
+    event.preventDefault();
+    const row = td.closest("tr");
+    if (row) enterEditMode(row);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "inline-edit-actions";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "mini-edit-btn save-btn row-save-btn";
+  saveBtn.textContent = "Save";
+  saveBtn.hidden = true;
+  saveBtn.addEventListener("click", () => {
+    const row = td.closest("tr");
+    if (row) saveRow(row);
+  });
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "mini-edit-btn cancel-btn row-cancel-btn";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.hidden = true;
+  cancelBtn.addEventListener("click", () => {
+    const row = td.closest("tr");
+    if (row) cancelEditMode(row);
+  });
+
+  actions.appendChild(saveBtn);
+  actions.appendChild(cancelBtn);
+  wrapper.appendChild(pencilBtn);
+  wrapper.appendChild(actions);
   wrapper.appendChild(span);
   wrapper.appendChild(input);
   td.appendChild(wrapper);
@@ -712,10 +556,9 @@ function createMultiSelectCell(user, field, options, cssClass) {
   picker.dataset.selected = "[]";
   picker.dataset.open = "false";
   picker.dataset.allowCustom = field === "instrument" ? "true" : "false";
-  picker.hidden = false;
-  picker._options = field === "instrument"
-    ? normalizeInstrumentOptionsList(options)
-    : options.map(option => ({ value: String(option.value), label: String(option.label) }));
+  picker.hidden = true;
+
+  picker._options = options.map(option => ({ value: String(option.value), label: String(option.label) }));
 
   const tags = document.createElement("div");
   tags.className = "tag-picker-tags";
@@ -740,28 +583,20 @@ function createMultiSelectCell(user, field, options, cssClass) {
     const addBtn = event.target.closest("button[data-action='add-option']");
     if (addBtn) {
       const selected = getTagPickerSelected(picker);
-      const rawValue = String(addBtn.dataset.value || "");
-      const value = field === "instrument" ? normalizeInstrumentName(rawValue) : rawValue;
-      if (!value) {
-        renderStatus("That instrument is not available.", true);
-        return;
-      }
-      if (!selectedIncludesValue(selected, value)) selected.push(value);
-      picker.dataset.selected = JSON.stringify(normalizeTagValuesForField(field, selected));
+      const value = String(addBtn.dataset.value || "");
+      if (!selected.includes(value)) selected.push(value);
+      picker.dataset.selected = JSON.stringify(selected);
       picker.dataset.open = "false";
       renderTagPicker(picker);
-      persistPickerChange(picker);
       return;
     }
 
     const removeBtn = event.target.closest("button[data-action='remove-tag']");
     if (removeBtn) {
-      const removeKey = String(removeBtn.dataset.value || "").toLowerCase();
-      const selected = getTagPickerSelected(picker).filter(value => String(value).toLowerCase() !== removeKey);
-      picker.dataset.selected = JSON.stringify(normalizeTagValuesForField(field, selected));
+      const selected = getTagPickerSelected(picker).filter(value => value !== String(removeBtn.dataset.value || ""));
+      picker.dataset.selected = JSON.stringify(selected);
       picker.dataset.open = "false";
       renderTagPicker(picker);
-      persistPickerChange(picker);
       return;
     }
 
@@ -772,33 +607,19 @@ function createMultiSelectCell(user, field, options, cssClass) {
       if (!raw) return;
 
       const optionsList = Array.isArray(picker._options) ? picker._options : [];
-      const value = field === "instrument"
-        ? normalizeInstrumentName(raw)
-        : raw;
-      if (!value || (field === "instrument" && !isAllowedInstrument(value))) {
-        renderStatus(`"${raw}" is not in the allowed instrument list.`, true);
-        return;
-      }
-
-      const existing = optionsList.find(option => String(option.value).toLowerCase() === value.toLowerCase());
+      const existing = optionsList.find(option => String(option.label).toLowerCase() === raw.toLowerCase());
+      const value = existing ? String(existing.value) : raw;
       if (!existing) {
-        optionsList.push({ value, label: value });
-        picker._options = field === "instrument"
-          ? normalizeInstrumentOptionsList(optionsList)
-          : optionsList.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+        optionsList.push({ value, label: raw });
+        picker._options = optionsList.sort((a, b) => String(a.label).localeCompare(String(b.label)));
       }
 
       const selected = getTagPickerSelected(picker);
-      if (selectedIncludesValue(selected, value)) {
-        renderStatus(`${value} is already selected.`, true);
-        return;
-      }
-      selected.push(value);
-      picker.dataset.selected = JSON.stringify(normalizeTagValuesForField(field, selected));
+      if (!selected.includes(value)) selected.push(value);
+      picker.dataset.selected = JSON.stringify(selected);
       if (input) input.value = "";
       picker.dataset.open = "false";
       renderTagPicker(picker);
-      persistPickerChange(picker);
       return;
     }
 
@@ -816,13 +637,7 @@ function createMultiSelectCell(user, field, options, cssClass) {
 function getTagPickerSelected(picker) {
   try {
     const parsed = JSON.parse(picker.dataset.selected || "[]");
-    const selected = Array.isArray(parsed) ? parsed.map(item => String(item)) : [];
-    const field = String(picker?.dataset?.field || "");
-    const normalized = normalizeTagValuesForField(field, selected);
-    if (JSON.stringify(selected) !== JSON.stringify(normalized)) {
-      picker.dataset.selected = JSON.stringify(normalized);
-    }
-    return normalized;
+    return Array.isArray(parsed) ? parsed.map(item => String(item)) : [];
   } catch {
     return [];
   }
@@ -830,13 +645,8 @@ function getTagPickerSelected(picker) {
 
 function getTagLabel(picker, value) {
   const options = Array.isArray(picker._options) ? picker._options : [];
-  const match = options.find(option => String(option.value).toLowerCase() === String(value).toLowerCase());
+  const match = options.find(option => String(option.value) === String(value));
   return match?.label || String(value);
-}
-
-function selectedIncludesValue(selected, value) {
-  const key = String(value || "").toLowerCase();
-  return selected.some(item => String(item || "").toLowerCase() === key);
 }
 
 function closeAllTagPickers(exceptPicker = null) {
@@ -847,27 +657,12 @@ function closeAllTagPickers(exceptPicker = null) {
   });
 }
 
-function persistPickerChange(picker) {
-  const row = picker?.closest?.("tr");
-  if (row) void saveRow(row);
-}
-
 function renderTagPicker(picker) {
   if (!picker) return;
-  const field = String(picker.dataset.field || "");
-  let selected = getTagPickerSelected(picker);
+  const selected = getTagPickerSelected(picker);
   const tagsEl = picker.querySelector(".tag-picker-tags");
   const listEl = picker.querySelector(".tag-picker-list");
   if (!tagsEl || !listEl) return;
-  if (field === "instrument") {
-    picker._options = normalizeInstrumentOptionsList([
-      ...(Array.isArray(picker._options) ? picker._options : []),
-      ...instrumentOptions,
-      ...CANONICAL_INSTRUMENTS
-    ]);
-  }
-  selected = normalizeTagValuesForField(field, selected);
-  picker.dataset.selected = JSON.stringify(selected);
 
   tagsEl.innerHTML = "";
   const isOpen = picker.dataset.open === "true";
@@ -903,15 +698,7 @@ function renderTagPicker(picker) {
     });
   }
 
-  const safeOptions = field === "instrument"
-    ? normalizeInstrumentOptionsList(picker._options || [])
-    : ensureArray(picker._options || [])
-      .map(option => ({ value: String(option.value), label: String(option.label ?? option.value) }))
-      .filter((option, index, list) =>
-        list.findIndex(item => item.value.toLowerCase() === option.value.toLowerCase()) === index
-      );
-  picker._options = safeOptions;
-  const available = safeOptions.filter(option => !selectedIncludesValue(selected, String(option.value)));
+  const available = (picker._options || []).filter(option => !selected.includes(String(option.value)));
   listEl.innerHTML = "";
   if (picker.dataset.allowCustom === "true") {
     const customWrap = document.createElement("div");
@@ -1021,22 +808,6 @@ function createActionsCell(user) {
   return td;
 }
 
-function createActiveCell(user) {
-  const td = document.createElement("td");
-  td.className = "actions-cell";
-
-  const toggle = document.createElement("button");
-  toggle.type = "button";
-  toggle.className = "mini-edit-btn";
-  updateActiveButton(toggle, !user.deactivated_at);
-  toggle.addEventListener("click", async () => {
-    await toggleUserActive(user, toggle);
-  });
-
-  td.appendChild(toggle);
-  return td;
-}
-
 function createCellForColumn(columnKey, user) {
   if (columnKey === "firstName" || columnKey === "lastName" || columnKey === "email") {
     return createEditableTextCell(user, columnKey, EDITABLE_TEXT_FIELD_TYPES[columnKey] || "text");
@@ -1046,7 +817,7 @@ function createCellForColumn(columnKey, user) {
   if (columnKey === "teacherIds") return createMultiSelectCell(user, "teacherIds", teacherOptions, "teacher-select");
   if (columnKey === "instrument") return createMultiSelectCell(user, "instrument", instrumentOptions, "instrument-select");
   if (columnKey === "points" || columnKey === "level") return createCell(getDisplayValue(user, columnKey));
-  if (columnKey === "active") return createActiveCell(user);
+  if (columnKey === "active") return createCell(getDisplayValue(user, "active"));
   if (columnKey === "actions") return createActionsCell(user);
   return createCell("-");
 }
@@ -1122,10 +893,8 @@ async function saveRow(row) {
 
   const userUpdates = {};
   let roleUpdates = null;
-  let validationFailed = false;
 
   row.querySelectorAll(".cell-input").forEach(input => {
-    if (validationFailed) return;
     const field = input.dataset.field;
     if (!field || field === "avatarUrl") return;
 
@@ -1139,17 +908,6 @@ async function saveRow(row) {
           .map(role => String(role || "").toLowerCase())
           .map(role => (role === "guardian" || role === "parent/guardian" ? "parent" : role))
           .filter((role, index, list) => role && list.indexOf(role) === index);
-      } else if (field === "instrument") {
-        const rawInstrumentValues = normalizeArray(newValue);
-        const normalizedInstruments = normalizeInstrumentList(newValue);
-        const hasInvalidInstrument = rawInstrumentValues.some(item => !normalizeInstrumentName(item));
-        if (hasInvalidInstrument) {
-          renderStatus("One or more instruments are not in the allowed instrument list.", true);
-          setInputValueFromUser(input, user);
-          validationFailed = true;
-          return;
-        }
-        userUpdates[field] = normalizedInstruments;
       } else {
         userUpdates[field] = normalizeArray(newValue);
       }
@@ -1160,10 +918,9 @@ async function saveRow(row) {
     userUpdates[field] = newValue;
   });
 
-  if (validationFailed) return;
-
   if (!Object.keys(userUpdates).length && !roleUpdates) {
     renderStatus("No changes to save.");
+    cancelEditMode(row);
     return;
   }
 
@@ -1261,17 +1018,7 @@ function renderUsers(totalRows = null) {
 
   const filteredUsers = applyFilters(allUsers);
   const filtered = getSortedUsers(filteredUsers);
-  if (expandedUserId && !filtered.some(user => String(user.id) === String(expandedUserId))) {
-    expandedUserId = null;
-  }
   const total = Number.isFinite(totalRows) ? totalRows : allUsers.length;
-  const mobileLayout = isMobileManageLayout();
-  const totalPages = Math.max(1, Math.ceil(filtered.length / MOBILE_USERS_PAGE_SIZE));
-  if (!mobileLayout) mobileUsersPage = 1;
-  mobileUsersPage = Math.min(Math.max(1, mobileUsersPage), totalPages);
-  const visibleRows = mobileLayout
-    ? filtered.slice((mobileUsersPage - 1) * MOBILE_USERS_PAGE_SIZE, mobileUsersPage * MOBILE_USERS_PAGE_SIZE)
-    : filtered;
   if (!filtered.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
@@ -1280,105 +1027,23 @@ function renderUsers(totalRows = null) {
     td.style.textAlign = "center";
     tr.appendChild(td);
     tbody.appendChild(tr);
-    setLoadedCount(`0 shown - ${total} total`);
-    renderManageUsersPager(0, 1);
+    setLoadedCount(`0 shown • ${total} total`);
     return;
   }
 
-  visibleRows.forEach(user => {
+  filtered.forEach(user => {
     const tr = document.createElement("tr");
-    const isExpanded = String(expandedUserId || "") === String(user.id || "");
     tr.dataset.userId = String(user.id || "");
-    tr.dataset.expanded = isExpanded ? "true" : "false";
-    tr.classList.add("mobile-collapsible-row");
-    tr.classList.toggle("is-expanded", isExpanded);
-    tr.classList.toggle("is-collapsed", !isExpanded);
     tr.classList.toggle("is-inactive", Boolean(user.deactivated_at));
 
-    const summaryCell = document.createElement("td");
-    summaryCell.className = "mobile-user-summary";
-    summaryCell.dataset.label = "";
-    const summaryButton = document.createElement("button");
-    summaryButton.type = "button";
-    summaryButton.className = "mobile-user-card-toggle";
-    summaryButton.setAttribute("aria-expanded", isExpanded ? "true" : "false");
-    const name = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "User";
-    const primaryInstrument = normalizeInstrumentList(user.instrument)[0] || "No instrument";
-    const statusText = user.deactivated_at ? "Inactive" : "Active";
-    const meta = `${primaryInstrument} | ${user.email || "No email"} | ${statusText}`;
-    const nameSpan = document.createElement("span");
-    nameSpan.className = "mobile-user-card-name";
-    nameSpan.textContent = name;
-    const metaSpan = document.createElement("span");
-    metaSpan.className = "mobile-user-card-meta";
-    metaSpan.textContent = meta;
-    summaryButton.appendChild(nameSpan);
-    summaryButton.appendChild(metaSpan);
-    summaryCell.appendChild(summaryButton);
-    tr.appendChild(summaryCell);
-
     visibleColumns.forEach(columnKey => {
-      const cell = createCellForColumn(columnKey, user);
-      cell.dataset.label = COLUMN_DEFS[columnKey]?.label || "";
-      tr.appendChild(cell);
+      tr.appendChild(createCellForColumn(columnKey, user));
     });
 
     tbody.appendChild(tr);
   });
 
-  bindMobileUserCollapseToggles();
-  renderManageUsersPager(filtered.length, totalPages);
-  const shownText = mobileLayout
-    ? `${visibleRows.length} shown on page ${mobileUsersPage} of ${totalPages}`
-    : `${filtered.length} shown`;
-  setLoadedCount(`${shownText} - ${total} total`);
-}
-
-function bindMobileUserCollapseToggles() {
-  document.querySelectorAll(".mobile-user-card-toggle").forEach(button => {
-    button.addEventListener("click", () => {
-      const row = button.closest("tr");
-      if (!row) return;
-      const userId = String(row.dataset.userId || "");
-      const expanded = row.dataset.expanded === "true";
-      expandedUserId = expanded ? null : userId;
-      document.querySelectorAll(".manage-users-table tbody tr.mobile-collapsible-row").forEach(currentRow => {
-        const currentId = String(currentRow.dataset.userId || "");
-        const isExpanded = Boolean(expandedUserId) && currentId === expandedUserId;
-        currentRow.dataset.expanded = isExpanded ? "true" : "false";
-        currentRow.classList.toggle("is-expanded", isExpanded);
-        currentRow.classList.toggle("is-collapsed", !isExpanded);
-        const toggle = currentRow.querySelector(".mobile-user-card-toggle");
-        if (toggle) toggle.setAttribute("aria-expanded", String(isExpanded));
-      });
-    });
-  });
-}
-
-function renderManageUsersPager(totalFiltered, totalPages) {
-  const pager = document.getElementById("paginationControls");
-  if (!pager) return;
-  if (!isMobileManageLayout() || totalFiltered <= MOBILE_USERS_PAGE_SIZE) {
-    pager.innerHTML = "";
-    return;
-  }
-  pager.innerHTML = `
-    <div class="mobile-list-pager">
-      <button type="button" class="blue-button mobile-users-prev" ${mobileUsersPage <= 1 ? "disabled" : ""}>Previous</button>
-      <span>Page ${mobileUsersPage} of ${totalPages}</span>
-      <button type="button" class="blue-button mobile-users-next" ${mobileUsersPage >= totalPages ? "disabled" : ""}>Next</button>
-    </div>
-  `;
-  pager.querySelector(".mobile-users-prev")?.addEventListener("click", () => {
-    if (mobileUsersPage <= 1) return;
-    mobileUsersPage--;
-    renderUsers();
-  });
-  pager.querySelector(".mobile-users-next")?.addEventListener("click", () => {
-    if (mobileUsersPage >= totalPages) return;
-    mobileUsersPage++;
-    renderUsers();
-  });
+  setLoadedCount(`${filtered.length} shown • ${total} total`);
 }
 
 async function resolveStudioId() {
@@ -1392,12 +1057,15 @@ async function resolveStudioId() {
 }
 
 async function fetchManageRows(studioId) {
-  if (activeTab === "students") {
-    const { data, error } = await supabase
+  if (activeTab === "students" || activeTab === "all") {
+    let query = supabase
       .from("users")
       .select('id, studio_id, "firstName", "lastName", email, "avatarUrl", roles, "teacherIds", instrument, points, level, parent_uuid, active, deactivated_at')
-      .eq("studio_id", studioId)
-      .contains("roles", ["student"]);
+      .eq("studio_id", studioId);
+    if (activeTab === "students") {
+      query = query.contains("roles", ["student"]);
+    }
+    const { data, error } = await query;
     if (error) throw error;
     return data ?? [];
   }
@@ -1441,7 +1109,7 @@ function buildUserRow(row) {
     identity_roles: normalizedIdentityRoles,
     roles,
     teacherIds: ensureArray(row?.teacherIds),
-    instrument: normalizeInstrumentList(row?.instrument),
+    instrument: ensureArray(row?.instrument),
     points: row?.points ?? null,
     level: row?.level ?? null,
     active,
@@ -1529,48 +1197,10 @@ async function initManageUsersPanel() {
 
   const access = await getAccessFlags();
   const viewerContext = await getViewerContext();
-  const { data: authData, error: authUserError } = await supabase.auth.getUser();
-  const authUserId = authData?.user?.id || viewerContext?.viewerUserId || null;
-  const studioId = viewerContext?.studioId || access?.studio_id || localStorage.getItem("activeStudioId");
-  const membershipResult = await loadStudioMembershipRoles(authUserId, studioId);
-  const userRoles = uniqueRoles(viewerContext?.accountRoles, viewerContext?.viewerRoles);
-  const membershipRoles = membershipResult.roles;
-  const staffRoles = new Set(["admin", "teacher"]);
-  const hasMembershipStaffRole = membershipRoles.some(role => staffRoles.has(role));
-  const hasViewerContextStaffRole =
-    String(viewerContext?.studioId || "") === String(studioId || "") &&
-    (Boolean(viewerContext?.accountIsAdmin) || Boolean(viewerContext?.accountIsTeacher));
-  const hasTeacherAdminAccess = hasMembershipStaffRole || hasViewerContextStaffRole;
-  const canOpenManageUsers = Boolean(
-    access?.is_owner ||
-    access?.can_manage_users ||
-    hasTeacherAdminAccess
-  );
-  const denied = Boolean(viewerContext?.isStudent || !studioId || !canOpenManageUsers);
-  if (denied) {
+  const allowed = Boolean((access?.is_owner || access?.can_manage_users) && !viewerContext?.isStudent);
+  if (!allowed) {
     renderStatus("Not authorized.", true);
-    console.warn("[ManageUsers] redirecting: insufficient permissions", {
-      authUserId,
-      activeStudioId: studioId || null,
-      userRoles,
-      studioMembershipRoles: membershipRoles,
-      accessFlags: access || null,
-      queryErrors: {
-        authUser: serializeQueryError(authUserError),
-        studioMembership: serializeQueryError(membershipResult.error)
-      },
-      flags: {
-        isOwner: Boolean(access?.is_owner),
-        canManageUsers: Boolean(access?.can_manage_users),
-        hasMembershipStaffRole,
-        hasViewerContextStaffRole,
-        hasTeacherAdminAccess,
-        canOpenManageUsers,
-        viewerContextIsStudent: Boolean(viewerContext?.isStudent),
-        hasActiveStudioId: Boolean(studioId)
-      },
-      denied
-    });
+    console.warn("[ManageUsers] redirecting: insufficient permissions");
     if (window.location.pathname.split("/").pop() === "manage-users.html") {
       window.location.replace("index.html");
     }
@@ -1592,7 +1222,6 @@ async function initManageUsersPanel() {
     searchHandlerBound = true;
     searchInput.addEventListener("input", event => {
       searchTerm = event.target.value || "";
-      mobileUsersPage = 1;
       renderUsers();
     });
   }
@@ -1605,10 +1234,6 @@ async function initManageUsersPanel() {
         : event.target?.parentElement;
       if (target?.closest(".tag-picker")) return;
       closeAllTagPickers();
-    });
-    window.addEventListener("resize", () => {
-      mobileUsersPage = 1;
-      renderUsers();
     });
   }
 

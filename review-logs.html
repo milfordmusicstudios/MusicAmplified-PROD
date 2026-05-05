@@ -5,7 +5,7 @@
   <meta name="supabase-anon-key" content="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind5Z2RtYXBxd3FqcXJtcmtzYWVmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTMyODE2NDEsImV4cCI6MjA2ODg1NzY0MX0.LPkBdlfSc6V8dbQ6wTAJMPvm7PzQ1OxOraypdee7w2I" />
 
   <meta charset="UTF-8">
-  <title>Review Logs | Music Amplified</title>
+  <title>Review Logs | Achievement App</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="style.css?v=20260121-1">
   <link rel="stylesheet" href="nav.css">
@@ -14,10 +14,10 @@
   <link rel="manifest" href="manifest.json" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="apple-mobile-web-app-title" content="Music Amplified" />
-  <link rel="icon" type="image/png" sizes="192x192" href="images/pwa/icon-192.png?v=20260421a" />
+  <meta name="apple-mobile-web-app-title" content="Achievement App" />
+  <link rel="icon" type="image/png" sizes="192x192" href="images/pwa/icon-192.png?v=20260418b" />
   
-  <link rel="apple-touch-icon" href="images/pwa/apple-touch-icon.png?v=20260421a" />
+  <link rel="apple-touch-icon" href="images/pwa/apple-touch-icon.png?v=20260418b" />
 </head>
 <body class="app-shell tall-background review-logs-page">
   <div class="app-main">
@@ -34,24 +34,7 @@
 
     <div class="filter-toolbar">
       <div class="filter-left">
-        <input id="searchInput" type="text" placeholder="Search keywords" aria-label="Search keywords">
-        <div id="studentFilterPicker" class="staff-student-picker review-student-filter">
-          <input
-            id="studentFilterSearch"
-            type="text"
-            placeholder="Filter by student..."
-            autocomplete="off"
-            aria-label="Filter by student"
-          >
-          <div id="studentFilterDropdown" class="staff-student-dropdown" hidden></div>
-          <div id="studentFilterSelected" class="staff-student-selected" aria-live="polite"></div>
-        </div>
-        <div class="date-range-filter" aria-label="Filter by date range">
-          <label for="dateFromInput">From</label>
-          <input id="dateFromInput" type="date">
-          <label for="dateToInput">To</label>
-          <input id="dateToInput" type="date">
-        </div>
+        <input id="searchInput" type="text" placeholder="Search logs...">
       </div>
       <div class="filter-right">
         <div class="view-toggle">
@@ -59,7 +42,6 @@
           <button id="showNotificationsBtn" class="blue-button">Notifications</button>
         </div>
         <button id="quickAddBtn" class="blue-button">Quick Add</button>
-        <button id="badgeBackfillBtn" class="blue-button badge-backfill-btn" type="button">Backfill Badges</button>
       </div>
     </div>
 
@@ -104,10 +86,6 @@
         <button id="prevPageBtn" class="blue-button">Prev</button>
         <span id="pageInfo"></span>
         <button id="nextPageBtn" class="blue-button">Next</button>
-        <label class="page-jump-control" for="jumpToPageInput">
-          <span>Jump to</span>
-          <input id="jumpToPageInput" type="number" min="1" step="1" inputmode="numeric" aria-label="Jump to page">
-        </label>
         <select id="logsPerPage" class="blue-button">
           <option value="25">25</option>
           <option value="50" selected>50</option>
@@ -174,7 +152,8 @@
           <textarea id="quickAddNotes" class="white-input" placeholder="Optional note"></textarea>
 
           <div class="button-row quickadd-actions">
-            <button id="quickAddSubmit" class="blue-button quickadd-submit" type="button">Submit Points</button>
+            <button id="quickAddSubmitAnother" class="blue-button quickadd-submit" type="button">Submit &amp; Add Another</button>
+            <button id="quickAddSubmitClose" class="blue-button quickadd-submit" type="button">Submit &amp; Close</button>
             <button id="quickAddCancel" class="blue-button quickadd-cancel" type="button">Cancel</button>
           </div>
           <p id="quickAddStatusMsg" class="staff-msg" style="display:none;" aria-live="polite"></p>
@@ -193,7 +172,7 @@
   <script type="module" src="studio-routing.js"></script>
   <script type="module" src="nav.js"></script>
 
-  <script type="module" src="review-logs.js"></script>
+  <script type="module" src="review-logs.js?v=20260505-2"></script>
   <script type="module" src="pwa-install.js"></script>
 </body>
 </html>

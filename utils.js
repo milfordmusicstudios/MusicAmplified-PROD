@@ -210,24 +210,6 @@ export async function getViewerContext() {
     console.warn("[ViewerContext] auth account lookup failed", err, { table: "users", userId: viewerUserId });
   }
 
-  const accountIdentityRoles = parseRoles(accountProfile?.roles);
-  let membershipRoles = [];
-  if (studioId) {
-    try {
-      const { data: membership, error: membershipError } = await client
-        .from("studio_members")
-        .select("roles")
-        .eq("user_id", viewerUserId)
-        .eq("studio_id", studioId)
-        .maybeSingle();
-      if (!membershipError) {
-        membershipRoles = parseRoles(membership?.roles);
-      }
-    } catch (err) {
-      console.warn("[ViewerContext] studio membership lookup failed", err, { table: "studio_members", userId: viewerUserId, studioId });
-    }
-  }
-
   let viewerProfile = accountProfile;
   if (requestedProfileId && String(requestedProfileId) !== String(viewerUserId)) {
     try {
@@ -239,32 +221,10 @@ export async function getViewerContext() {
       if (candidateError) throw candidateError;
 
       const candidateRoles = parseRoles(candidateProfile?.roles);
-      const candidateStudioId = String(candidateProfile?.studio_id || studioId || "").trim();
-      const candidateIsStudent = candidateRoles.includes("student");
-      const candidateIsDirectChild = candidateIsStudent
+      const candidateIsLinkedStudent = candidateRoles.includes("student")
         && String(candidateProfile?.parent_uuid || "") === String(viewerUserId);
-      let candidateIsLinkedChild = false;
-      if (candidateIsStudent && !candidateIsDirectChild && candidateStudioId) {
-        try {
-          const { data: linkRow, error: linkError } = await client
-            .from("parent_student_links")
-            .select("student_id")
-            .eq("parent_id", viewerUserId)
-            .eq("student_id", requestedProfileId)
-            .eq("studio_id", candidateStudioId)
-            .maybeSingle();
-          if (!linkError && linkRow?.student_id) candidateIsLinkedChild = true;
-        } catch (linkErr) {
-          console.warn("[ViewerContext] parent_student_links active profile lookup failed", linkErr, { userId: requestedProfileId });
-        }
-      }
-      const accountCanViewStudioStudent = candidateIsStudent
-        && candidateStudioId
-        && String(candidateStudioId) === String(studioId || candidateStudioId)
-        && Array.from(new Set([...accountIdentityRoles, ...membershipRoles]))
-          .some((role) => ["owner", "admin", "teacher"].includes(role));
 
-      if (candidateIsDirectChild || candidateIsLinkedChild || accountCanViewStudioStudent) {
+      if (candidateIsLinkedStudent) {
         viewerProfile = candidateProfile;
       } else {
         setActiveProfileId(viewerUserId);
@@ -282,7 +242,25 @@ export async function getViewerContext() {
     localStorage.setItem("activeStudioId", studioId);
   }
 
+  const accountIdentityRoles = parseRoles(accountProfile?.roles);
   const profileIdentityRoles = parseRoles(viewerProfile?.roles);
+  let membershipRoles = [];
+  if (studioId) {
+    try {
+      const { data: membership, error: membershipError } = await client
+        .from("studio_members")
+        .select("roles")
+        .eq("user_id", viewerUserId)
+        .eq("studio_id", studioId)
+        .maybeSingle();
+      if (!membershipError) {
+        membershipRoles = parseRoles(membership?.roles);
+      }
+    } catch (err) {
+      console.warn("[ViewerContext] studio membership lookup failed", err, { table: "studio_members", userId: viewerUserId, studioId });
+    }
+  }
+
   const accountRoles = Array.from(new Set([...accountIdentityRoles, ...membershipRoles]));
   const isViewerAccountProfile = String(viewerProfile?.id || viewerUserId) === String(viewerUserId);
   const viewerRoles = isViewerAccountProfile
@@ -857,9 +835,151 @@ export async function ensureUserRow() {
   return row || null;
 }
 
+function getDisplayLevelName(level) {
+  const raw = String(level || "").trim();
+  const normalized = raw.replace(/^\s*Level\s+/i, "").trim();
+  return normalized ? `Level ${normalized}` : raw;
+}
+
+function getCompletedLevelRange(previousLevel, newLevel) {
+  const previous = Number(previousLevel || 0);
+  const next = Number(newLevel || 0);
+  if (!Number.isFinite(previous) || !Number.isFinite(next) || previous <= 0 || next <= previous) return null;
+  return {
+    start: previous,
+    end: next - 1
+  };
+}
+
+export async function fetchStudentLevelSnapshots(userIds = []) {
+  const ids = Array.from(new Set(
+    (Array.isArray(userIds) ? userIds : [userIds])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean)
+  ));
+  const snapshots = new Map();
+  if (!ids.length) return snapshots;
+
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, level, points, firstName, lastName, studio_id")
+    .in("id", ids);
+  if (error) {
+    console.warn("[LevelCompleted] failed to fetch level snapshots", error);
+    return snapshots;
+  }
+
+  (data || []).forEach((row) => {
+    const id = String(row?.id || "").trim();
+    if (id) snapshots.set(id, row);
+  });
+  return snapshots;
+}
+
+async function resolveLevelCompletedRecipients({ studioId, studentUserId, studentRow = null }) {
+  const recipients = new Set();
+  const studentId = String(studentUserId || "").trim();
+  if (studentId) recipients.add(studentId);
+
+  const assignedTeacherIds = new Set(
+    (Array.isArray(studentRow?.teacherIds) ? studentRow.teacherIds : [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean)
+  );
+
+  if (studioId) {
+    const { data: staffRows, error: staffError } = await supabase
+      .from("studio_members")
+      .select("user_id, roles")
+      .eq("studio_id", studioId);
+    if (staffError) {
+      console.warn("[Notifications] staff recipient lookup failed for level completion", staffError);
+    } else {
+      (staffRows || []).forEach((row) => {
+        const userId = String(row?.user_id || "").trim();
+        if (!userId) return;
+        const roles = parseRoles(row?.roles);
+        if (roles.includes("admin") || (roles.includes("teacher") && assignedTeacherIds.has(userId))) {
+          recipients.add(userId);
+        }
+      });
+    }
+  }
+
+  return Array.from(recipients);
+}
+
+export async function createLevelCompletedNotification({
+  studioId,
+  studentUserId,
+  studentName,
+  previousLevel,
+  newLevel,
+  completedLevelStart,
+  completedLevelEnd
+}) {
+  const range = completedLevelStart && completedLevelEnd
+    ? { start: Number(completedLevelStart), end: Number(completedLevelEnd) }
+    : getCompletedLevelRange(previousLevel, newLevel);
+  if (!studentUserId || !range) return { ok: true, skipped: true };
+
+  try {
+    const studentId = String(studentUserId || "").trim();
+    let notificationStudioId = String(studioId || "").trim() || null;
+    let resolvedStudentName = String(studentName || "").trim();
+    let studentRow = null;
+    const { data: studentData, error: studentError } = await supabase
+      .from("users")
+      .select('id, studio_id, "firstName", "lastName", "teacherIds"')
+      .eq("id", studentId)
+      .maybeSingle();
+    if (studentError) {
+      console.warn("[Notifications] student lookup failed for level completion", studentError);
+    } else if (studentData?.id) {
+      studentRow = studentData;
+      notificationStudioId = notificationStudioId || String(studentData?.studio_id || "").trim() || null;
+      resolvedStudentName = resolvedStudentName || `${studentData?.firstName || ""} ${studentData?.lastName || ""}`.trim();
+    }
+
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError) {
+      console.warn("[Notifications] auth user lookup failed for level completion", authError);
+    }
+    const createdBy = String(authData?.user?.id || "").trim() || null;
+    const recipientIds = await resolveLevelCompletedRecipients({
+      studioId: notificationStudioId,
+      studentUserId: studentId,
+      studentRow
+    });
+
+    const { data, error } = await supabase.rpc("insert_level_completed_notifications", {
+      p_studio_id: notificationStudioId,
+      p_student_id: studentId,
+      p_student_name: resolvedStudentName || "Student",
+      p_completed_level_start: range.start,
+      p_completed_level_end: range.end,
+      p_created_by: createdBy,
+      p_recipient_ids: recipientIds
+    });
+    console.log("[LevelCompleted][notification-rpc response]", {
+      insertedCount: data ?? null,
+      error: error ?? null,
+      studentUserId: studentId,
+      studioId: notificationStudioId,
+      recipientCount: recipientIds.length
+    });
+    if (error) throw error;
+    return { ok: true, insertedCount: Number(data || 0), recipientCount: recipientIds.length };
+  } catch (apiErr) {
+    console.warn("[Notifications] level completion notification failed", apiErr);
+    return { ok: false, error: apiErr };
+  }
+}
+
 // ✅ Helper: Popup for level-up event
 function showLevelUpPopup(userName, newLevelName) {
   console.log("[DEBUG] Showing Level-Up popup for:", userName, newLevelName);
+  const displayName = getDisplayLevelName(newLevelName);
 
   setTimeout(() => {
     const overlay = document.createElement('div');
@@ -882,7 +1002,7 @@ function showLevelUpPopup(userName, newLevelName) {
         animation: fadeIn 0.3s ease;
       ">
         <h2 style="color:#00477d; margin-bottom:10px;">🎉 Level Up!</h2>
-        <p>${userName} just reached <b>${newLevelName}</b>!</p>
+        <p>${userName} completed <b>${displayName}</b>!</p>
         <button id="closeLevelUpPopup" class="blue-button" style="margin-top:15px;">OK</button>
       </div>
     `;
@@ -893,8 +1013,73 @@ function showLevelUpPopup(userName, newLevelName) {
   }, 1500);
 }
 
-export async function recalculateUserPoints(userId) {
+async function recalculateUserPointsViaRpc({ userId, studioId }) {
+  const { data, error } = await supabase.rpc("recalculate_user_points_and_level", {
+    p_studio_id: studioId || null,
+    p_user_id: userId
+  });
+  if (error) throw error;
+
+  const totalPoints = Number(data?.totalPoints ?? data?.total_points ?? 0);
+  const levelId = Number(data?.level ?? data?.level_id ?? 0);
+  if (!Number.isFinite(totalPoints) || !Number.isFinite(levelId) || levelId <= 0) {
+    throw new Error("Invalid recalculation RPC response");
+  }
+
+  return {
+    totalPoints,
+    currentLevel: {
+      id: levelId
+    }
+  };
+}
+
+async function recalculateUserPointsInBrowser({ userId, studioId }) {
+  let logsQuery = supabase
+    .from('logs')
+    .select('points')
+    .eq('userId', userId)
+    .eq('status', 'approved');
+  if (studioId) logsQuery = logsQuery.eq('studio_id', studioId);
+  const { data: logs, error: logsError } = await logsQuery;
+  if (logsError) throw logsError;
+
+  const totalPoints = (logs || []).reduce((sum, log) => sum + (Number(log.points) || 0), 0);
+
+  const { data: levels, error: levelsError } = await supabase
+    .from('levels')
+    .select('*')
+    .order('minPoints', { ascending: true });
+  if (levelsError) throw levelsError;
+
+  const currentLevel =
+    (levels || []).find((l) => {
+      const min = Number(l.minPoints || 0);
+      const max = Number(l.maxPoints);
+      return totalPoints >= min && (!Number.isFinite(max) || totalPoints <= max);
+    }) ||
+    [...(levels || [])].reverse().find((l) => totalPoints >= Number(l.minPoints || 0)) ||
+    (levels || [])[0];
+
+  if (!currentLevel?.id) throw new Error("Unable to resolve level");
+
+  const { error: updateError } = await supabase
+    .from('users')
+    .update({ points: totalPoints, level: currentLevel.id })
+    .eq('id', userId);
+  if (updateError) throw updateError;
+
+  return { totalPoints, currentLevel };
+}
+
+export async function recalculateUserPoints(userId, options = {}) {
   try {
+    const {
+      notifyLevelCompletion = true,
+      previousLevelOverride = null,
+      levelSnapshotBefore = null,
+      studioIdOverride = null
+    } = options || {};
     const { data: userBefore, error: beforeErr } = await supabase
       .from('users')
       .select('points, level, firstName, lastName, roles, studio_id, teacherIds')
@@ -902,33 +1087,18 @@ export async function recalculateUserPoints(userId) {
       .single();
     if (beforeErr) throw beforeErr;
 
-    const { data: logs, error: logsError } = await supabase
-      .from('logs')
-      .select('*')
-      .eq('userId', userId)
-      .eq('status', 'approved');
-    if (logsError) throw logsError;
-
-    const totalPoints = logs.reduce((sum, log) => sum + (log.points || 0), 0);
-
-    const { data: levels, error: levelsError } = await supabase
-      .from('levels')
-      .select('*')
-      .order('minPoints', { ascending: true });
-    if (levelsError) throw levelsError;
-
-    const currentLevel =
-      levels.find(l => totalPoints >= l.minPoints && totalPoints <= l.maxPoints) ||
-      levels[levels.length - 1];
-
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({ points: totalPoints, level: currentLevel.id })
-      .eq('id', userId);
-    if (updateError) throw updateError;
+    const studioId = String(studioIdOverride || userBefore?.studio_id || localStorage.getItem("activeStudioId") || "").trim() || null;
+    let recalculated;
+    try {
+      recalculated = await recalculateUserPointsViaRpc({ userId, studioId });
+    } catch (rpcErr) {
+      console.warn("[Recalculate] RPC writeback failed; falling back to browser update", rpcErr);
+      recalculated = await recalculateUserPointsInBrowser({ userId, studioId });
+    }
+    const { totalPoints, currentLevel } = recalculated;
 
     const loggedIn = JSON.parse(localStorage.getItem('loggedInUser'));
-    let previousLevel = userBefore?.level;
+    let previousLevel = previousLevelOverride ?? levelSnapshotBefore?.level ?? userBefore?.level;
     if (loggedIn && loggedIn.id === userId && loggedIn.level) {
       previousLevel = loggedIn.level;
     }
@@ -944,8 +1114,9 @@ export async function recalculateUserPoints(userId) {
 
     if (didLevelUp) {
       const fullName = `${userBefore.firstName || ''} ${userBefore.lastName || ''}`.trim();
-      let studioId = String(userBefore?.studio_id || localStorage.getItem("activeStudioId") || "").trim() || null;
-      if (!studioId) {
+      const displayLevelName = getDisplayLevelName(currentLevel.name || currentLevel.id);
+      let notificationStudioId = studioId;
+      if (!notificationStudioId) {
         const { data: membershipRows, error: membershipErr } = await supabase
           .from("studio_members")
           .select("studio_id")
@@ -955,59 +1126,21 @@ export async function recalculateUserPoints(userId) {
           console.warn("[Notifications] studio lookup failed for level-up", membershipErr);
         } else {
           const fallbackStudioId = String(membershipRows?.[0]?.studio_id || "").trim();
-          studioId = fallbackStudioId || null;
+          notificationStudioId = fallbackStudioId || null;
         }
       }
-      const previousLevelNumber = Number(previousLevel || 0);
-      const levelsToNotify = [];
-      for (let level = previousLevelNumber + 1; level <= newLevel; level += 1) {
-        levelsToNotify.push(level);
-      }
-      try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const accessToken = String(sessionData?.session?.access_token || "").trim();
-        const headers = { "Content-Type": "application/json" };
-        if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-        const requestUrl = "/api/notifications/level-up";
-        const requestMethod = "POST";
-        for (const level of levelsToNotify) {
-          const requestBody = {
-            studioId,
-            studentUserId: String(userId || "").trim(),
-            studentName: fullName || "Student",
-            level
-          };
-          console.log("[LevelUpDiag][utils.js][recalculateUserPoints] notification-api request", {
-            requestUrl,
-            method: requestMethod,
-            body: requestBody
-          });
-          const response = await fetch(requestUrl, {
-            method: "POST",
-            credentials: "include",
-            headers,
-            body: JSON.stringify(requestBody)
-          });
-          const responseBody = await response.json().catch(() => ({}));
-          console.log("[LevelUpDiag][utils.js][recalculateUserPoints] notification-api response", {
-            requestUrl,
-            method: requestMethod,
-            status: response.status,
-            body: responseBody
-          });
-          if (!response.ok) {
-            console.warn("[Notifications] level-up API failed", {
-              status: response.status,
-              error: responseBody?.error || null
-            });
-          }
-        }
-      } catch (apiErr) {
-        console.warn("[Notifications] level-up API request error", apiErr);
+      if (notifyLevelCompletion) {
+        await createLevelCompletedNotification({
+          studioId: notificationStudioId,
+          studentUserId: userId,
+          studentName: fullName || "Student",
+          previousLevel,
+          newLevel
+        });
       }
 
       if (loggedIn && loggedIn.id === userId && loggedIn.roles?.includes('student')) {
-        showLevelUpPopup(fullName, currentLevel.name || `Level ${currentLevel.id}`);
+        showLevelUpPopup(fullName, displayLevelName);
         loggedIn.level = currentLevel.id;
         localStorage.setItem('loggedInUser', JSON.stringify(loggedIn));
       }
@@ -1019,4 +1152,30 @@ export async function recalculateUserPoints(userId) {
     console.error('[ERROR] Recalculate failed:', err);
     return null;
   }
+}
+
+export async function recalculateUsersAfterApprovedBatch(userIds = [], levelSnapshotsBefore = null, options = {}) {
+  const ids = Array.from(new Set(
+    (Array.isArray(userIds) ? userIds : [userIds])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean)
+  ));
+  if (!ids.length) return new Map();
+
+  const snapshots = levelSnapshotsBefore instanceof Map
+    ? levelSnapshotsBefore
+    : await fetchStudentLevelSnapshots(ids);
+  const studioId = String(options?.studioId || localStorage.getItem("activeStudioId") || "").trim() || null;
+  const results = new Map();
+  for (const id of ids) {
+    const before = snapshots.get(id) || null;
+    const result = await recalculateUserPoints(id, {
+      levelSnapshotBefore: before,
+      previousLevelOverride: before?.level ?? null,
+      studioIdOverride: studioId || before?.studio_id || null,
+      notifyLevelCompletion: true
+    });
+    results.set(id, result);
+  }
+  return results;
 }

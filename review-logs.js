@@ -1,11 +1,12 @@
 import { supabase } from "./supabaseClient.js";
-import { getCategoryDefaultPoints, getViewerContext, recalculateUserPoints } from './utils.js';
+import { createLevelCompletedNotification, fetchStudentLevelSnapshots, getCategoryDefaultPoints, getViewerContext, recalculateUserPoints, recalculateUsersAfterApprovedBatch } from './utils.js';
 import { ensureStudioContextAndRoute } from "./studio-routing.js";
 import { createTeacherAdminTutorial } from "./student-tutorial.js";
 const dispatchTutorialAction = (action) => {
   if (!action) return;
   window.dispatchEvent(new CustomEvent(String(action)));
 };
+
 const DEBUG_REVIEW_LOGS = false;
 
 const categoryOptions = ["practice", "participation", "performance", "personal", "proficiency"];
@@ -16,6 +17,7 @@ const categoryColors = {
   personal: "#f3ab40",
   proficiency: "#ff7099"
 };
+
 document.addEventListener("DOMContentLoaded", async () => {
   console.log("[DEBUG] Review Logs: Script loaded");
 
@@ -80,14 +82,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     reviewLogsErrorPanel.style.display = "flex";
   };
-  const showReviewLogsStatus = (message) => {
-    if (!reviewLogsErrorPanel) return;
-    reviewLogsErrorPanel.innerHTML = "";
-    const line = document.createElement("div");
-    line.textContent = message;
-    reviewLogsErrorPanel.appendChild(line);
-    reviewLogsErrorPanel.style.display = "flex";
-  };
 
   console.log("[AuthZ]", { page: "review-logs", roles: viewerContext.viewerRoles, studioId: viewerContext.studioId });
   if (!viewerContext.isAdmin && !viewerContext.isTeacher) {
@@ -104,25 +98,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     return;
   }
   const activeRole = viewerContext.isAdmin ? "admin" : "teacher";
-  const tutorialUserId = viewerContext?.viewerUserId || viewerContext?.activeProfileId || null;
   const teacherAdminTutorial = createTeacherAdminTutorial({
-    userId: tutorialUserId,
-    profileId: tutorialUserId
+    profileId: viewerContext?.viewerUserId || viewerContext?.activeProfileId || null
   });
   void teacherAdminTutorial.maybeStart();
   if (document.body) {
     document.body.classList.remove("is-staff", "is-admin");
     document.body.classList.add(activeRole === "admin" ? "is-admin" : "is-staff");
   }
-  const awardBadgesForApprovedUsers = async (userIds) => {
+  const awardBadgesForApprovedUsers = (userIds) => {
     const uniqueIds = Array.from(new Set((userIds || []).map(id => String(id || "").trim()).filter(Boolean)));
-    if (!uniqueIds.length) return [];
+    if (!uniqueIds.length) return;
 
     if (typeof window.showToast === "function") {
       window.showToast("Awarding badges...");
     }
 
-    const results = await Promise.allSettled(uniqueIds.map(async (uid) => {
+    Promise.allSettled(uniqueIds.map(async (uid) => {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData?.session?.access_token || "";
       const headers = { "Content-Type": "application/json" };
@@ -142,13 +134,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       }
       return null;
-    }));
-
-    const failures = results.filter(r => r.status === "rejected");
-    if (failures.length) {
-      console.warn("[Badges] evaluate-on-approve failed", failures.map(f => f.reason?.message || f.reason));
-    }
-    return results;
+    })).then((results) => {
+      const failures = results.filter(r => r.status === "rejected");
+      if (failures.length) {
+        console.warn("[Badges] evaluate-on-approve failed", failures.map(f => f.reason?.message || f.reason));
+      }
+    });
   };
 
   const backfillLevelUpNotificationsForStudio = async () => {
@@ -184,71 +175,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  const backfillBadgesForStudio = async () => {
-    const activeStudioId = String(viewerContext?.studioId || "").trim();
-    if (!activeStudioId) {
-      throw new Error("No active studio id available for badge backfill.");
-    }
-
-    console.log("[Badges][review-logs.js][backfillBadgesForStudio] rpc start", {
-      rpc: "recompute_badges_for_studio",
-      studio_id: activeStudioId,
-      user_id: viewerContext?.viewerUserId || null
-    });
-    const { data, error } = await supabase.rpc("recompute_badges_for_studio", {
-      p_studio_id: activeStudioId
-    });
-    console.log("[Badges][review-logs.js][backfillBadgesForStudio] rpc result", {
-      data: data ?? null,
-      error: error ?? null
-    });
-    if (error) throw error;
-    window.dispatchEvent(new Event("aa:notification-state-changed"));
-    return data;
-  };
-
-  window.AA_backfillBadgesForStudio = backfillBadgesForStudio;
-
-  const badgeBackfillBtn = document.getElementById("badgeBackfillBtn");
-  if (badgeBackfillBtn) {
-    badgeBackfillBtn.addEventListener("click", async () => {
-      const confirmed = confirm("Recompute earned badges for all current students in this studio? This is safe to run more than once.");
-      if (!confirmed) return;
-
-      badgeBackfillBtn.disabled = true;
-      const originalText = badgeBackfillBtn.textContent;
-      badgeBackfillBtn.textContent = "Backfilling...";
-      showReviewLogsStatus("Badge backfill is running...");
-      try {
-        const result = await backfillBadgesForStudio();
-        const evaluated = Number(result?.evaluatedUsers || 0);
-        const insertedTotal = Array.isArray(result?.results)
-          ? result.results.reduce((sum, row) => sum + Number(row?.insertedBadges || 0) + Number(row?.insertedSeasonalProgress || 0), 0)
-          : 0;
-        showReviewLogsStatus(`Badge backfill complete. Evaluated ${evaluated} student${evaluated === 1 ? "" : "s"}; inserted ${insertedTotal} badge/progress row${insertedTotal === 1 ? "" : "s"}.`);
-      } catch (error) {
-        console.warn("[ReviewLogs] badge backfill failed", error);
-        showReviewLogsError("Badge backfill failed.", error);
-      } finally {
-        badgeBackfillBtn.disabled = false;
-        badgeBackfillBtn.textContent = originalText;
-      }
-    });
-  }
-
-  if (new URLSearchParams(window.location.search).get("backfillBadges") === "studio") {
-    showReviewLogsStatus("Badge backfill is running...");
-    backfillBadgesForStudio()
-      .then((result) => {
-        const evaluated = Number(result?.evaluatedUsers || 0);
-        showReviewLogsStatus(`Badge backfill complete. Evaluated ${evaluated} student${evaluated === 1 ? "" : "s"}.`);
-      })
-      .catch((error) => {
-        console.warn("[ReviewLogs] badge backfill failed", error);
-        showReviewLogsError("Badge backfill failed.", error);
-      });
-  }
-
   const roleBadge = document.getElementById("reviewRoleBadge");
   if (roleBadge instanceof HTMLImageElement) {
     if (activeRole === "admin") {
@@ -267,35 +193,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   const logsTableBody = document.getElementById("logsTableBody");
   const categorySummary = document.getElementById("categorySummary");
   const searchInput = document.getElementById("searchInput");
-  const studentFilterSearch = document.getElementById("studentFilterSearch");
-  const studentFilterDropdown = document.getElementById("studentFilterDropdown");
-  const studentFilterSelected = document.getElementById("studentFilterSelected");
-  const dateFromInput = document.getElementById("dateFromInput");
-  const dateToInput = document.getElementById("dateToInput");
   const bulkActionBar = document.getElementById("bulkActionBar");
-  const prevPageBtn = document.getElementById("prevPageBtn");
-  const nextPageBtn = document.getElementById("nextPageBtn");
-  const pageInfo = document.getElementById("pageInfo");
-  const jumpToPageInput = document.getElementById("jumpToPageInput");
-  const logsPerPageSelect = document.getElementById("logsPerPage");
 
   let allLogs = [];
-  let totalLogsCount = null;
   let users = [];
   let filteredLogs = [];
   let currentSort = { field: "date", order: "desc" };
   let currentPage = 1;
-  const isMobileReviewLayout = () => window.matchMedia?.("(max-width: 700px)")?.matches || window.innerWidth <= 700;
-  let logsPerPage = isMobileReviewLayout() ? 10 : (parseInt(logsPerPageSelect?.value || "25", 10) || 25);
-  if (isMobileReviewLayout() && logsPerPageSelect) {
-    if (!logsPerPageSelect.querySelector('option[value="10"]')) {
-      logsPerPageSelect.insertAdjacentHTML("afterbegin", '<option value="10">10</option>');
-    }
-    logsPerPageSelect.value = "10";
-  }
+  let logsPerPage = 25;
   let activeCardFilter = "all";
   let pendingCardFlashPlayed = false;
-  const selectedStudentFilterIds = new Set();
   const requestedFilter = new URLSearchParams(window.location.search).get("filter");
   const normalizedRequestedFilter = requestedFilter === "needs-approval" ? "pending" : requestedFilter;
   if (normalizedRequestedFilter === "pending" || normalizedRequestedFilter === "approved-today" || normalizedRequestedFilter === "needs info" || normalizedRequestedFilter === "all") {
@@ -306,108 +213,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   const isApprovedStatus = (value) => String(value || "").toLowerCase() === "approved";
   const isNeedsInfoStatus = (value) => String(value || "").toLowerCase() === "needs info";
   const isSameDay = (value, today) => String(value || "").startsWith(today);
-  const getLogDateValue = (log) => String(log?.date || "").split("T")[0];
   const getApprovedTimestamp = (log) => log._approvedAtLocal || log.approved_at || log.updated_at || "";
   const isApprovedToday = (log, today) => {
     if (!isApprovedStatus(log.status)) return false;
     const approvedStamp = getApprovedTimestamp(log);
     return approvedStamp ? isSameDay(approvedStamp, today) : false;
   };
-  const getReviewStudentName = (student) => {
-    const first = student?.firstName || "";
-    const last = student?.lastName || "";
-    return `${first} ${last}`.trim() || student?.email || "Student";
-  };
-  const hasStudentRole = (student) => {
-    const roles = Array.isArray(student?.roles) ? student.roles : [student?.roles];
-    return roles.map((role) => String(role || "").toLowerCase()).includes("student");
-  };
-  const canViewerAccessStudent = (student) => {
-    if (!hasStudentRole(student)) return false;
-    if (viewerContext.isAdmin) return true;
-    if (!viewerContext.isTeacher) return false;
-    const teacherIds = Array.isArray(student?.teacherIds) ? student.teacherIds.map(String) : [];
-    return teacherIds.includes(String(viewerContext.viewerUserId));
-  };
-  const getFilterableStudents = () => {
-    return users
-      .filter(canViewerAccessStudent)
-      .sort((a, b) => getReviewStudentName(a).localeCompare(getReviewStudentName(b)));
-  };
-  const renderSelectedStudentFilters = () => {
-    if (!studentFilterSelected) return;
-    studentFilterSelected.innerHTML = "";
-
-    if (!selectedStudentFilterIds.size) {
-      const empty = document.createElement("span");
-      empty.className = "staff-student-empty";
-      empty.textContent = "All students";
-      studentFilterSelected.appendChild(empty);
-      return;
-    }
-
-    getFilterableStudents()
-      .filter((student) => selectedStudentFilterIds.has(String(student.id)))
-      .forEach((student) => {
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className = "staff-student-chip";
-        chip.dataset.studentId = String(student.id);
-        chip.textContent = `${getReviewStudentName(student)} x`;
-        chip.addEventListener("click", () => {
-          selectedStudentFilterIds.delete(String(student.id));
-          renderSelectedStudentFilters();
-          renderStudentFilterDropdown();
-          applyFilters();
-        });
-        studentFilterSelected.appendChild(chip);
-      });
-  };
-  function renderStudentFilterDropdown() {
-    if (!studentFilterSearch || !studentFilterDropdown) return;
-    const query = String(studentFilterSearch.value || "").trim().toLowerCase();
-    studentFilterDropdown.innerHTML = "";
-
-    if (!query) {
-      studentFilterDropdown.setAttribute("hidden", "");
-      return;
-    }
-
-    const matches = getFilterableStudents().filter((student) =>
-      getReviewStudentName(student).toLowerCase().includes(query)
-    );
-
-    if (!matches.length) {
-      const empty = document.createElement("div");
-      empty.className = "staff-student-no-match";
-      empty.textContent = "No matching students";
-      studentFilterDropdown.appendChild(empty);
-      studentFilterDropdown.removeAttribute("hidden");
-      return;
-    }
-
-    matches.forEach((student) => {
-      const id = String(student.id);
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = "staff-student-option";
-      item.dataset.studentId = id;
-      const isSelected = selectedStudentFilterIds.has(id);
-      item.textContent = isSelected ? `Selected: ${getReviewStudentName(student)}` : getReviewStudentName(student);
-      if (isSelected) item.classList.add("is-selected");
-      item.addEventListener("click", () => {
-        if (selectedStudentFilterIds.has(id)) selectedStudentFilterIds.delete(id);
-        else selectedStudentFilterIds.add(id);
-        renderSelectedStudentFilters();
-        renderStudentFilterDropdown();
-        applyFilters();
-        studentFilterSearch.focus();
-      });
-      studentFilterDropdown.appendChild(item);
-    });
-
-    studentFilterDropdown.removeAttribute("hidden");
-  }
   const maybeFlashPendingCard = (pendingCount) => {
     if (pendingCardFlashPlayed || Number(pendingCount || 0) <= 0) return;
     const pendingCard = categorySummary?.querySelector(".summary-card.pending");
@@ -568,12 +379,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const { data: usersData, error: usersError } = await supabase
       .from("users")
-      .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at")
-      .eq("studio_id", viewerContext.studioId)
-      .contains("roles", ["student"]);
+      .select("id, firstName, lastName, teacherIds")
+      .eq("studio_id", viewerContext.studioId);
     if (usersError) throw usersError;
 
-    users = (usersData || []).filter(canViewerAccessStudent);
+    users = usersData || [];
     allLogs = (logsData || []).map(l => ({
       ...l,
       fullName:
@@ -584,12 +394,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (viewerContext.isTeacher && !viewerContext.isAdmin) {
       const myStudents = users
+        .filter(u => Array.isArray(u.teacherIds) && u.teacherIds.map(String).includes(String(viewerContext.viewerUserId)))
         .map(s => String(s.id));
       allLogs = allLogs.filter(l => myStudents.includes(String(l.userId)));
     }
 
     hideReviewLogsError();
-    renderSelectedStudentFilters();
     applyFilters();
   } catch (err) {
     console.error("[ERROR] Review Logs:", err);
@@ -598,38 +408,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Search + Card Filter
   searchInput.addEventListener("input", applyFilters);
-  dateFromInput?.addEventListener("change", applyFilters);
-  dateToInput?.addEventListener("change", applyFilters);
-  if (studentFilterSearch) {
-    studentFilterSearch.addEventListener("input", renderStudentFilterDropdown);
-    studentFilterSearch.addEventListener("focus", renderStudentFilterDropdown);
-  }
-  document.addEventListener("click", (event) => {
-    if (!studentFilterSearch || !studentFilterDropdown) return;
-    const picker = studentFilterSearch.closest(".staff-student-picker");
-    if (picker && !picker.contains(event.target)) {
-      studentFilterDropdown.setAttribute("hidden", "");
-    }
-  });
 
   function applyFilters() {
     const searchVal = searchInput.value.toLowerCase();
-    const dateFrom = String(dateFromInput?.value || "").trim();
-    const dateTo = String(dateToInput?.value || "").trim();
     const todayStr = todayString();
 
     filteredLogs = allLogs.filter(l => {
-      const logDate = getLogDateValue(l);
-      const matchesStudent =
-        selectedStudentFilterIds.size === 0 ||
-        selectedStudentFilterIds.has(String(l.userId || ""));
       const matchesSearch =
         l.fullName.toLowerCase().includes(searchVal) ||
         (l.notes || "").toLowerCase().includes(searchVal) ||
         (l.category || "").toLowerCase().includes(searchVal);
-      const matchesDate =
-        (!dateFrom || (logDate && logDate >= dateFrom)) &&
-        (!dateTo || (logDate && logDate <= dateTo));
       let matchesCard = true;
       if (activeCardFilter === "pending") {
         matchesCard = String(l.status || "").toLowerCase() === "pending";
@@ -638,7 +426,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       } else if (activeCardFilter === "needs info") {
         matchesCard = String(l.status || "").toLowerCase() === "needs info";
       }
-      return matchesStudent && matchesSearch && matchesDate && matchesCard;
+      return matchesSearch && matchesCard;
     });
 
     currentPage = 1;
@@ -682,132 +470,78 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // Pagination
-  function getTotalPages(list = filteredLogs) {
-    return Math.max(1, Math.ceil((list?.length || 0) / logsPerPage));
-  }
-
-  function updatePaginationControls(list = filteredLogs) {
-    const totalItems = list?.length || 0;
-    const totalPages = getTotalPages(list);
-    currentPage = Math.min(Math.max(1, currentPage), totalPages);
-
-    if (pageInfo) {
-      pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
-    }
-    if (jumpToPageInput) {
-      jumpToPageInput.max = String(totalPages);
-      jumpToPageInput.value = String(currentPage);
-      jumpToPageInput.disabled = totalItems === 0;
-    }
-    if (prevPageBtn) prevPageBtn.disabled = currentPage <= 1 || totalItems === 0;
-    if (nextPageBtn) nextPageBtn.disabled = currentPage >= totalPages || totalItems === 0;
-  }
-
-  prevPageBtn?.addEventListener("click", () => {
+  document.getElementById("prevPageBtn").addEventListener("click", () => {
     if (currentPage > 1) {
       currentPage--;
       renderLogsTable(filteredLogs);
     }
   });
 
-  nextPageBtn?.addEventListener("click", () => {
-    const totalPages = getTotalPages(filteredLogs);
+  document.getElementById("nextPageBtn").addEventListener("click", () => {
+    const totalPages = Math.ceil(filteredLogs.length / logsPerPage);
     if (currentPage < totalPages) {
       currentPage++;
       renderLogsTable(filteredLogs);
     }
   });
 
-  jumpToPageInput?.addEventListener("change", e => {
-    const totalPages = getTotalPages(filteredLogs);
-    const requestedPage = parseInt(e.target.value, 10);
-    currentPage = Math.min(Math.max(1, requestedPage || 1), totalPages);
-    renderLogsTable(filteredLogs);
-  });
-
-  jumpToPageInput?.addEventListener("keydown", e => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    e.currentTarget.blur();
-  });
-
-  logsPerPageSelect?.addEventListener("change", e => {
-    logsPerPage = parseInt(e.target.value, 10) || 25;
+  document.getElementById("logsPerPage").addEventListener("change", e => {
+    logsPerPage = parseInt(e.target.value);
     currentPage = 1;
     renderLogsTable(filteredLogs);
   });
 
-  window.addEventListener("resize", () => {
-    if (!isMobileReviewLayout() || logsPerPage === 10) return;
-    logsPerPage = 10;
-    if (logsPerPageSelect) logsPerPageSelect.value = "10";
-    currentPage = 1;
-    renderLogsTable(filteredLogs);
-  });
+  function renderCategorySummary(list) {
+    if (!categorySummary) return;
+    const pendingCount = list.filter(l => String(l.status || "").toLowerCase() === "pending").length;
+    const todayStr = todayString();
+    const approvedTodayCount = list.filter(l => isApprovedToday(l, todayStr)).length;
+    const needsInfoCount = list.filter(l => String(l.status || "").toLowerCase() === "needs info").length;
 
-async function renderCategorySummary(list) {
-  if (!categorySummary) return;
+    const cards = [
+      { label: "Pending Logs", value: pendingCount },
+      { label: "Approved Today", value: approvedTodayCount },
+      { label: "Needs Info", value: needsInfoCount },
+      { label: "Total Logs", value: list.length }
+    ];
 
-  if (totalLogsCount === null) {
-    const { count, error } = await supabase
-      .from("logs")
-      .select("*", { count: "exact", head: true })
-      .eq("studio_id", viewerContext.studioId);
-
-    if (!error) totalLogsCount = count;
-  }
-
-  const pendingCount = list.filter(l => String(l.status || "").toLowerCase() === "pending").length;
-  const todayStr = todayString();
-  const approvedTodayCount = list.filter(l => isApprovedToday(l, todayStr)).length;
-  const needsInfoCount = list.filter(l => String(l.status || "").toLowerCase() === "needs info").length;
-
-  const cards = [
-    { label: "Pending Logs", value: pendingCount },
-    { label: "Approved Today", value: approvedTodayCount },
-    { label: "Needs Info", value: needsInfoCount },
-    { label: "Total Logs", value: totalLogsCount ?? list.length }
-  ];
-
-  categorySummary.innerHTML = cards.map(card => {
-    const key = card.label.toLowerCase();
-    let extraClass = "";
-    let filterTag = "all";
-
-    if (key.includes("pending")) {
-      extraClass = "pending";
-      filterTag = "pending";
-    } else if (key.includes("approved")) {
-      extraClass = "approved";
-      filterTag = "approved-today";
-    } else if (key.includes("total")) {
-      extraClass = "total";
-      filterTag = "all";
-    } else if (key.includes("needs info")) {
-      extraClass = "review";
-      filterTag = "needs info";
-    } else {
-      extraClass = "review";
-    }
-
-    return `
+    categorySummary.innerHTML = cards.map(card => {
+      const key = card.label.toLowerCase();
+      let extraClass = "";
+      let filterTag = "all";
+      if (key.includes("pending")) {
+        extraClass = "pending";
+        filterTag = "pending";
+      } else if (key.includes("approved")) {
+        extraClass = "approved";
+        filterTag = "approved-today";
+      } else if (key.includes("total")) {
+        extraClass = "total";
+        filterTag = "all";
+      } else if (key.includes("needs info")) {
+        extraClass = "review";
+        filterTag = "needs info";
+      } else {
+        extraClass = "review";
+      }
+      return `
       <div class="summary-card ${extraClass} ${activeCardFilter === filterTag ? "is-active" : ""}" data-filter="${filterTag}">
         <div class="summary-label">${card.label}</div>
         <div class="summary-value">${card.value}</div>
       </div>
     `;
-  }).join("");
+    }).join("");
 
-  categorySummary.querySelectorAll(".summary-card").forEach(card => {
-    card.addEventListener("click", () => {
-      const filter = card.dataset.filter || "all";
-      activeCardFilter = filter;
-      applyFilters();
+    categorySummary.querySelectorAll(".summary-card").forEach(card => {
+      card.addEventListener("click", () => {
+        const filter = card.dataset.filter || "all";
+        activeCardFilter = filter;
+        applyFilters();
+      });
     });
-  });
+    maybeFlashPendingCard(pendingCount);
+  }
 
-  maybeFlashPendingCard(pendingCount);
-}
   function formatShortDate(value) {
     if (!value) return "";
     const parsed = new Date(value);
@@ -821,51 +555,35 @@ async function renderCategorySummary(list) {
       logsTableBody.innerHTML = `<tr><td colspan="7" class="logs-empty-state">No logs found yet.</td></tr>`;
       document.getElementById("selectAll").checked = false;
       updateBulkActionBarVisibility();
-      updatePaginationControls([]);
       return;
     }
-    if (!list.length) {
-      logsTableBody.innerHTML = `<tr><td colspan="7" class="logs-empty-state">No logs match the current filters.</td></tr>`;
-      document.getElementById("selectAll").checked = false;
-      updateBulkActionBarVisibility();
-      updatePaginationControls(list);
-      return;
-    }
-    updatePaginationControls(list);
     const start = (currentPage - 1) * logsPerPage;
     const end = start + logsPerPage;
     const pageLogs = list.slice(start, end);
 
     pageLogs.forEach((log, index) => {
       const row = document.createElement("tr");
-      row.className = `${index % 2 === 0 ? "log-row-even" : "log-row-odd"} mobile-collapsible-row is-collapsed`;
-      row.dataset.expanded = "false";
+      row.className = index % 2 === 0 ? "log-row-even" : "log-row-odd";
       const categoryKey = String(log.category || "").toLowerCase();
       row.innerHTML = `
-        <td class="checkbox-cell" data-label="Select"><input type="checkbox" class="select-log" data-id="${log.id}"></td>
-        <td data-label="Student">
-          <button type="button" class="mobile-log-card-toggle" aria-expanded="false">
-            <span class="mobile-log-card-name">${log.fullName}</span>
-            <span class="mobile-log-card-date">${formatShortDate(log.date)}</span>
-          </button>
-          <span class="desktop-log-student-name">${log.fullName}</span>
-        </td>
-        <td class="category-cell" data-label="Category" style="--cat-color:${categoryColors[categoryKey] || '#ccc'};">
+        <td class="checkbox-cell"><input type="checkbox" class="select-log" data-id="${log.id}"></td>
+        <td>${log.fullName}</td>
+        <td class="category-cell" style="--cat-color:${categoryColors[categoryKey] || '#ccc'};">
           <select class="edit-input" data-id="${log.id}" data-field="category">
             ${categoryOptions.map(c =>
               `<option value="${c}" ${log.category?.toLowerCase() === c ? "selected" : ""}>${c}</option>`
             ).join("")}
           </select>
         </td>
-        <td class="date-cell" data-label="Date">
+        <td class="date-cell">
           <div class="date-wrapper">
             <input type="date" class="edit-input date-picker" data-id="${log.id}" data-field="date" value="${(log.date || '').split('T')[0] || ''}">
             <span class="date-label">${formatShortDate(log.date)}</span>
           </div>
         </td>
-        <td data-label="Points"><input type="number" class="edit-input" data-id="${log.id}" data-field="points" value="${log.points ?? 0}"></td>
-        <td data-label="Notes"><textarea class="edit-input" data-id="${log.id}" data-field="notes">${log.notes || ""}</textarea></td>
-        <td data-label="Status">
+        <td><input type="number" class="edit-input" data-id="${log.id}" data-field="points" value="${log.points ?? 0}"></td>
+        <td><textarea class="edit-input" data-id="${log.id}" data-field="notes">${log.notes || ""}</textarea></td>
+        <td>
           <select class="edit-input status-select status-pill" data-id="${log.id}" data-field="status" data-status="${String(log.status || "pending").toLowerCase()}">
             <option value="pending" ${log.status === "pending" ? "selected" : ""}>Pending</option>
             <option value="approved" ${log.status === "approved" ? "selected" : ""}>Approved</option>
@@ -877,23 +595,8 @@ async function renderCategorySummary(list) {
     });
 
     document.getElementById("selectAll").checked = false;
-    applyMobileCollapseListeners();
     applyEditListeners();
     updateBulkActionBarVisibility();
-  }
-
-  function applyMobileCollapseListeners() {
-    document.querySelectorAll("#logsTableBody .mobile-log-card-toggle").forEach(button => {
-      button.addEventListener("click", () => {
-        const row = button.closest("tr");
-        if (!row) return;
-        const expanded = row.dataset.expanded === "true";
-        row.dataset.expanded = expanded ? "false" : "true";
-        row.classList.toggle("is-collapsed", expanded);
-        row.classList.toggle("is-expanded", !expanded);
-        button.setAttribute("aria-expanded", String(!expanded));
-      });
-    });
   }
 
   function updateBulkActionBarVisibility() {
@@ -931,6 +634,10 @@ async function renderCategorySummary(list) {
         if (!updated) return;
         const previousStatus = String(updated.status || "").toLowerCase();
         const nowApproved = field === "status" && String(value).toLowerCase() === "approved";
+        const pointsChangedWhileApproved = field === "points" && String(updated.status).toLowerCase() === "approved";
+        const levelSnapshotsBefore = (nowApproved || pointsChangedWhileApproved)
+          ? await fetchStudentLevelSnapshots([updated.userId])
+          : new Map();
 
         let handledByChallengeApprovalRpc = false;
         if (nowApproved) {
@@ -954,8 +661,7 @@ async function renderCategorySummary(list) {
         // Keep our local copy in sync
         updated[field] = value;
 
-        // If the log is now approved, or points changed while approved, recalc that student
-        const pointsChangedWhileApproved = field === "points" && String(updated.status).toLowerCase() === "approved";
+        // If the log is now approved, or points changed while approved, recalc that student.
 
         if (nowApproved) {
           updated._approvedAtLocal = new Date().toISOString();
@@ -964,13 +670,18 @@ async function renderCategorySummary(list) {
 
         if (nowApproved || pointsChangedWhileApproved) {
           try {
-            await recalculateUserPoints(String(updated.userId));
+            const before = levelSnapshotsBefore.get(String(updated.userId)) || null;
+            await recalculateUserPoints(String(updated.userId), {
+              levelSnapshotBefore: before,
+              previousLevelOverride: before?.level ?? null,
+              studioIdOverride: viewerContext.studioId
+            });
           } catch (recalcErr) {
             console.error("[ERROR] recalculateUserPoints:", recalcErr);
           }
         }
         if (nowApproved) {
-          await awardBadgesForApprovedUsers([updated.userId]);
+          awardBadgesForApprovedUsers([updated.userId]);
         }
         const nowNeedsInfo = field === "status" && isNeedsInfoStatus(value) && previousStatus !== "needs info";
         if (nowNeedsInfo) {
@@ -985,7 +696,8 @@ async function renderCategorySummary(list) {
   // Delete selected logs
   document.getElementById("deleteSelectedBtn").addEventListener("click", async () => {
     const selectedIds = Array.from(document.querySelectorAll(".select-log:checked"))
-      .map(cb => String(cb.dataset.id).trim());
+      .map(cb => String(cb.dataset.id).trim())
+      .filter(Boolean);
 
     if (selectedIds.length === 0) {
       alert("No logs selected.");
@@ -997,22 +709,62 @@ async function renderCategorySummary(list) {
     }
 
     try {
-      const { error } = await supabase.from("logs").delete().in("id", selectedIds);
+      const selectedRows = allLogs.filter(l => selectedIds.includes(String(l.id)));
+      const affectedUserIds = Array.from(new Set(
+        selectedRows.map(l => String(l.userId || "").trim()).filter(Boolean)
+      ));
+      const levelSnapshotsBefore = affectedUserIds.length
+        ? await fetchStudentLevelSnapshots(affectedUserIds)
+        : new Map();
+
+      const { data: deletedRows, error } = await supabase
+        .from("logs")
+        .delete()
+        .in("id", selectedIds)
+        .eq("studio_id", viewerContext.studioId)
+        .select("id,userId,studio_id");
       if (error) {
         console.error("[DELETE ERROR]", error);
-        alert("❌ Failed to delete logs: " + error.message);
+        alert("Failed to delete logs: " + error.message);
         return;
       }
 
-      // Remove from local arrays
-      allLogs = allLogs.filter(l => !selectedIds.includes(String(l.id)));
+      const deletedIds = new Set((deletedRows || []).map(row => String(row.id)));
+      if (deletedIds.size === 0) {
+        console.warn("[DELETE WARNING] Delete returned no rows", { selectedIds, deletedRows });
+        alert("No logs were deleted. Please refresh and try again.");
+        return;
+      }
+
+      const deletedUserIds = Array.from(new Set(
+        (deletedRows || [])
+          .map(row => String(row.userId || "").trim())
+          .filter(Boolean)
+      ));
+      if (deletedUserIds.length) {
+        const recalcResults = await recalculateUsersAfterApprovedBatch(deletedUserIds, levelSnapshotsBefore, {
+          studioId: viewerContext.studioId
+        });
+        const failedRecalcIds = Array.from(recalcResults.entries())
+          .filter(([, result]) => !result)
+          .map(([studentId]) => studentId);
+        if (failedRecalcIds.length) {
+          throw new Error(`Deleted logs, but recalculation failed for ${failedRecalcIds.length} student(s).`);
+        }
+      }
+
+      allLogs = allLogs.filter(l => !deletedIds.has(String(l.id)));
       applyFilters();
       updateBulkActionBarVisibility();
+      await updateNotificationsButtonState();
       window.dispatchEvent(new Event("aa:notification-state-changed"));
-      alert("✅ Selected logs deleted successfully.");
+      window.dispatchEvent(new Event("aa:points-state-changed"));
+      alert("Selected logs deleted successfully.");
+      return;
     } catch (err) {
       console.error("Delete logs failed:", err);
-      alert("❌ Failed to delete logs.");
+      alert("Failed to delete logs: " + (err?.message || "Unknown error"));
+      return;
     }
     });
 
@@ -1041,6 +793,9 @@ async function renderCategorySummary(list) {
     ));
 
     try {
+      const levelSnapshotsBefore = normalizedStatus === "approved" && affectedUserIds.length
+        ? await fetchStudentLevelSnapshots(affectedUserIds)
+        : new Map();
       let selectedIdsToDirectUpdate = [...selectedIds];
       if (normalizedStatus === "approved") {
         const rpcHandledIds = new Set();
@@ -1076,16 +831,14 @@ async function renderCategorySummary(list) {
         return { ...l, status: "rejected" };
       });
 
-      for (const uid of affectedUserIds) {
-        try {
-          await recalculateUserPoints(uid);
-        } catch (recalcErr) {
-          console.error("[ERROR] recalculateUserPoints:", recalcErr);
-        }
+      if (normalizedStatus === "approved") {
+        await recalculateUsersAfterApprovedBatch(affectedUserIds, levelSnapshotsBefore, {
+          studioId: viewerContext.studioId
+        });
       }
 
       if (normalizedStatus === "approved") {
-        await awardBadgesForApprovedUsers(affectedUserIds);
+        awardBadgesForApprovedUsers(affectedUserIds);
       }
 
       applyFilters();
@@ -1120,9 +873,9 @@ const notificationsSection = document.getElementById("notificationsSection");
 
 const isLevelUpNotification = (row) => {
   const type = String(row?.type || "").toLowerCase();
-  if (type === "level_up") return true;
+  if (type === "level_up" || type === "level_completed") return true;
   const message = String(row?.message || "").toLowerCase();
-  return message.includes("reached level") || message.includes("advanced to level");
+  return message.includes("reached level") || message.includes("advanced to level") || message.includes("completed level");
 };
 
 const isNotificationRead = (row) => {
@@ -1162,7 +915,17 @@ const mergeNotificationRows = (rowSets, limit) => {
   const merged = [];
   rowSets.flat().forEach((row) => {
     if (!row) return;
-    const key = String(row?.id || `${row?.created_at || ""}:${row?.message || ""}:${row?.userId || row?.user_id || ""}`);
+    const type = String(row?.type || "").toLowerCase();
+    const eventKey = type === "level_completed"
+      ? [
+          "level_completed",
+          row?.studio_id || "",
+          row?.message || "",
+          row?.completed_level_start ?? "",
+          row?.completed_level_end ?? ""
+        ].join("|")
+      : "";
+    const key = eventKey || String(row?.id || `${row?.created_at || ""}:${row?.message || ""}:${row?.userId || row?.user_id || ""}`);
     if (seen.has(key)) return;
     seen.add(key);
     merged.push(row);
@@ -1303,32 +1066,24 @@ const updateRecognitionState = async (row, recognitionGiven, recognitionNote) =>
 async function fetchViewerNotifications(limit = 80) {
   const viewerUserId = String(viewerContext?.viewerUserId || "").trim();
   const activeStudioId = String(viewerContext?.studioId || "").trim();
-  const isStaffViewer = Boolean(viewerContext?.isAdmin || viewerContext?.isTeacher);
-  const attempts = isStaffViewer && activeStudioId
-    ? [
-        { label: "staff:studio_id", userKey: "", includeStudio: true }
-      ]
-    : [
-        { label: "userId+studio_id", userKey: "userId", includeStudio: Boolean(activeStudioId) },
-        { label: "userId:no_studio_filter", userKey: "userId", includeStudio: false },
-        { label: "user_id+studio_id", userKey: "user_id", includeStudio: Boolean(activeStudioId) },
-        { label: "user_id:no_studio_filter", userKey: "user_id", includeStudio: false }
-      ];
+  const attempts = [
+    { label: "user_id+studio_id", userKey: "user_id", includeStudio: Boolean(activeStudioId) },
+    { label: "user_id:no_studio_filter", userKey: "user_id", includeStudio: false },
+    { label: "legacy_userId+studio_id", userKey: "userId", includeStudio: Boolean(activeStudioId), legacyOnly: true }
+  ];
   console.log("[NotifDiag][review-logs.js][fetchViewerNotifications] query plan", {
     source: "review-logs.js::fetchViewerNotifications",
     viewerUserId,
     activeStudioId: activeStudioId || null,
     limit,
     attempts: attempts.map((attempt) => attempt.label),
-    reason: isStaffViewer
-      ? "Fetch staff/admin notification rows by studio_id because notification ownership is the student."
-      : "Fetch exact user rows, legacy no-studio rows, and both userId/user_id schemas."
+    reason: "Fetch canonical user_id rows first; legacy userId is fallback only."
   });
   const rowSets = [];
   const errors = [];
   for (const attempt of attempts) {
     const filters = {
-      ...(attempt.userKey ? { [attempt.userKey]: viewerUserId } : {}),
+      [attempt.userKey]: viewerUserId,
       studio_id: attempt.includeStudio ? activeStudioId : "(omitted)",
       limit,
       orderBy: "created_at desc"
@@ -1341,11 +1096,9 @@ async function fetchViewerNotifications(limit = 80) {
     let query = supabase
       .from("notifications")
       .select("*")
+      .eq(attempt.userKey, viewerUserId)
       .order("created_at", { ascending: false })
       .limit(limit);
-    if (attempt.userKey) {
-      query = query.eq(attempt.userKey, viewerUserId);
-    }
     if (attempt.includeStudio) {
       query = query.eq("studio_id", activeStudioId);
     }
@@ -1362,6 +1115,7 @@ async function fetchViewerNotifications(limit = 80) {
       errors.push({ attempt: attempt.label, error });
       continue;
     }
+    if (attempt.legacyOnly && rowSets.length > 0) continue;
     if (count > 0) rowSets.push(data);
   }
   const merged = mergeNotificationRows(rowSets, limit);
@@ -1398,7 +1152,7 @@ async function updateNotificationsButtonState() {
   });
   showNotificationsBtn.classList.toggle("has-alert", unresolvedLevelUpCount > 0);
   showNotificationsBtn.setAttribute("aria-label", unresolvedLevelUpCount > 0
-    ? `Notifications (${unresolvedLevelUpCount} level-up alerts pending)`
+    ? `Notifications (${unresolvedLevelUpCount} level completion alerts pending)`
     : "Notifications");
 }
 
@@ -1439,8 +1193,9 @@ async function loadNotifications() {
     return;
   }
 
-  await markNotificationsRead(notifications);
-  const normalizedNotifications = notifications.map((row) => ({ ...row, read: true }));
+  const uniqueNotifications = mergeNotificationRows([notifications], 120);
+  await markNotificationsRead(uniqueNotifications);
+  const normalizedNotifications = uniqueNotifications.map((row) => ({ ...row, read: true }));
 
   const list = document.createElement("ul");
   list.className = "review-notification-list";
@@ -1454,7 +1209,7 @@ async function loadNotifications() {
         <button
           type="button"
           class="review-notification-help-trigger"
-          title="Mark this when the student's level-up has been recognized by your studio."
+          title="Mark this when the student's level completion has been recognized by your studio."
           aria-label="Recognition given help"
         >?</button>
       </div>
@@ -1570,7 +1325,8 @@ window.addEventListener("aa:notification-state-changed", () => {
 const quickAddBtn = document.getElementById("quickAddBtn");
 const quickAddModal = document.getElementById("quickAddModal");
 const quickAddCancel = document.getElementById("quickAddCancel");
-const quickAddSubmit = document.getElementById("quickAddSubmit");
+const quickAddSubmitAnother = document.getElementById("quickAddSubmitAnother");
+const quickAddSubmitClose = document.getElementById("quickAddSubmitClose");
 
 const quickAddStudentSearch = document.getElementById("quickAddStudentSearch");
 const quickAddStudentsSelect = document.getElementById("quickAddStudents");
@@ -1612,10 +1368,13 @@ function setQuickAddStatus(message, type = "success") {
   }
   quickAddStatusMsg.textContent = String(message);
   quickAddStatusMsg.style.display = "block";
-  quickAddStatusMsg.style.color = type === "error" ? "#c62828" : "#0b7a3a";
+  quickAddStatusMsg.style.color = type === "error" ? "#c62828" : type === "warning" ? "#9a5b00" : "#0b7a3a";
 }
 
 function getQuickAddLocalDateString(dateLike) {
+  if (typeof dateLike === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateLike)) {
+    return dateLike;
+  }
   const d = new Date(dateLike);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -1845,7 +1604,7 @@ async function loadQuickAddCategories() {
     return;
   }
 
-  const blockedCategoryNames = new Set(["batch_practice", "practice_batch"]);
+  const blockedCategoryNames = new Set(["batch_practice"]);
   const visibleCategories = (categories || []).filter(
     (cat) => !blockedCategoryNames.has(String(cat?.name || "").toLowerCase())
   );
@@ -1978,7 +1737,8 @@ if (quickAddCalPrev && quickAddCalNext) {
 
   quickAddCalNext.addEventListener("click", () => {
     const nextMonth = new Date(quickAddCalendarView.year, quickAddCalendarView.month + 1, 1);
-    const todayStart = new Date(getQuickAddLocalDateString(new Date()));
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     if (nextMonth <= todayStart) {
       quickAddCalendarView.year = nextMonth.getFullYear();
       quickAddCalendarView.month = nextMonth.getMonth();
@@ -1995,67 +1755,135 @@ if (quickAddCalendarToggle && quickAddCalendarPanel) {
   });
 }
 
-if (quickAddSubmit) {
-  quickAddSubmit.addEventListener("click", async () => {
-    setQuickAddStatus("");
-    const selectedIds = Array.from(quickAddSelectedStudentIds);
-    const category = String(quickAddCategory?.value || "").trim();
-    const categoryKey = category.toLowerCase();
-    const selectedDates = Array.from(quickAddSelectedDates);
-    const notes = quickAddNotes?.value?.trim() || "";
+async function saveQuickAddLogs({ closeAfterSave = false } = {}) {
+  setQuickAddStatus("");
+  const selectedIds = Array.from(quickAddSelectedStudentIds);
+  const activeStudioId = String(viewerContext?.studioId || "").trim();
+  const category = String(quickAddCategory?.value || "").trim();
+  const categoryKey = category.toLowerCase();
+  const selectedDates = Array.from(quickAddSelectedDates);
+  const notes = quickAddNotes?.value?.trim() || "";
 
-    if (selectedIds.length === 0) {
-      setQuickAddStatus("Select at least one student.", "error");
-      return;
-    }
-    if (!category) {
-      setQuickAddStatus("Please select a category.", "error");
-      return;
-    }
-    if (!selectedDates.length) {
-      setQuickAddStatus("Please select at least one date.", "error");
-      return;
-    }
+  if (!activeStudioId) {
+    setQuickAddStatus("Missing active studio. Please reload and try again.", "error");
+    return;
+  }
+  if (selectedIds.length === 0) {
+    setQuickAddStatus("Select at least one student.", "error");
+    return;
+  }
+  if (!category) {
+    setQuickAddStatus("Please select a category.", "error");
+    return;
+  }
+  if (!selectedDates.length) {
+    setQuickAddStatus("Please select at least one date.", "error");
+    return;
+  }
 
-    const resolvedPoints = categoryKey === "practice" ? 5 : Number(quickAddPoints?.value);
-    if (!Number.isFinite(resolvedPoints) || resolvedPoints < 0) {
-      setQuickAddStatus("Enter valid points.", "error");
-      return;
-    }
+  const resolvedPoints = categoryKey === "practice" ? 5 : Number(quickAddPoints?.value);
+  if (!Number.isFinite(resolvedPoints) || resolvedPoints < 0) {
+    setQuickAddStatus("Enter valid points.", "error");
+    return;
+  }
 
-    const inserts = [];
-    selectedIds.forEach((id) => {
-      selectedDates.forEach((date) => {
-        inserts.push({
-          userId: id,
-          studio_id: viewerContext.studioId,
-          category,
-          notes,
-          date,
-          points: resolvedPoints,
-          status: "approved",
-          created_by: viewerContext.viewerUserId
-        });
+  const inserts = [];
+  selectedIds.forEach((id) => {
+    selectedDates.forEach((date) => {
+      inserts.push({
+        userId: id,
+        studio_id: activeStudioId,
+        category,
+        notes,
+        date,
+        points: resolvedPoints,
+        status: "approved",
+        created_by: viewerContext.viewerUserId
       });
     });
+  });
 
+  const buttons = [quickAddSubmitAnother, quickAddSubmitClose].filter(Boolean);
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    const levelSnapshotsBefore = await fetchStudentLevelSnapshots(selectedIds);
     const { error } = await supabase.from("logs").insert(inserts);
     if (error) {
       console.error("Quick Add failed:", error);
       setQuickAddStatus(error?.message || "Error adding logs.", "error");
       return;
     }
+    console.log("Quick Add inserted logs", {
+      count: inserts.length,
+      studentIds: selectedIds,
+      activeStudioId
+    });
 
-    for (const id of selectedIds) {
-      try {
-        await recalculateUserPoints(id);
-      } catch (err) {
-        console.error("Recalc error:", err);
+    let levelNotificationFailed = false;
+    for (const studentId of selectedIds) {
+      console.log("Quick Add recalculating student", studentId, activeStudioId);
+      const { data: recalcData, error: recalcError } = await supabase.rpc("recalculate_user_points_and_level", {
+        p_studio_id: activeStudioId,
+        p_user_id: studentId
+      });
+      if (recalcError) {
+        console.error("Quick Add recalculation error", recalcError, { studentId, activeStudioId });
+        throw recalcError;
+      }
+      console.log("Quick Add recalculation result", recalcData, { studentId, activeStudioId });
+
+      const before = levelSnapshotsBefore.get(String(studentId)) || null;
+      const oldLevel = Number(before?.level || 0);
+      const newLevel = Number(recalcData?.level || recalcData?.level_id || 0);
+      const student = quickAddRoster.find((row) => String(row?.id) === String(studentId));
+      const notificationResult = await createLevelCompletedNotification({
+        studioId: activeStudioId,
+        studentUserId: studentId,
+        studentName: getQuickAddStudentName(student),
+        previousLevel: oldLevel,
+        newLevel
+      });
+      if (notificationResult && notificationResult.ok === false) {
+        levelNotificationFailed = true;
       }
     }
-    await awardBadgesForApprovedUsers(selectedIds);
 
-    setQuickAddStatus(`Logged ${inserts.length} entr${inserts.length === 1 ? "y" : "ies"} across ${selectedIds.length} student(s).`, "success");
+    const successMessage = `Logged ${inserts.length} entr${inserts.length === 1 ? "y" : "ies"} across ${selectedIds.length} student(s).`;
+    if (closeAfterSave) {
+      if (levelNotificationFailed) {
+        setQuickAddStatus("Points saved, but level completion notification failed.", "warning");
+        alert("Points saved, but level completion notification failed.");
+      } else {
+        setQuickAddStatus("");
+      }
+      quickAddModal.style.display = "none";
+      return;
+    }
+
+    resetQuickAddModalState();
+    setQuickAddStatus(
+      levelNotificationFailed
+        ? `${successMessage} Points saved, but level completion notification failed. Ready for another log.`
+        : `${successMessage} Ready for another log.`,
+      levelNotificationFailed ? "warning" : "success"
+    );
+  } catch (error) {
+    console.error("Quick Add save failed:", error);
+    setQuickAddStatus(error?.message || "Error saving logs.", "error");
+  } finally {
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
+
+if (quickAddSubmitAnother) {
+  quickAddSubmitAnother.addEventListener("click", async () => {
+    await saveQuickAddLogs({ closeAfterSave: false });
+  });
+}
+
+if (quickAddSubmitClose) {
+  quickAddSubmitClose.addEventListener("click", async () => {
+    await saveQuickAddLogs({ closeAfterSave: true });
   });
 }
 });

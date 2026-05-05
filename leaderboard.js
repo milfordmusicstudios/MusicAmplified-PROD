@@ -2,11 +2,7 @@ import { supabase } from "./supabaseClient.js";
 import { ensureStudioContextAndRoute } from "./studio-routing.js";
 
 const OFFSETS = [0, 14, -14, 28, -28];
-const MOBILE_OFFSETS = [0, 9, -9, 18, -18];
 const PAD_X = 28;
-const MIN_ZOOM = 1;
-const MAX_ZOOM = 4;
-const ZOOM_POSITION_SETTLE_MS = 60;
 
 document.addEventListener("DOMContentLoaded", async () => {
   const routeResult = await ensureStudioContextAndRoute({ redirectHome: false });
@@ -16,8 +12,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const loadingText = document.getElementById("loadingMessage");
   const countEl = document.getElementById("leaderboardCount");
   const container = document.getElementById("leaderboardBars") || document.getElementById("leaderboardContainer");
-  const zoomInput = document.getElementById("leaderboardZoom");
-  const zoomValue = document.getElementById("leaderboardZoomValue");
 
   const messages = [
     "🎶 Loading the rhythm of success…",
@@ -48,7 +42,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     renderLevelBars(container, levelsDesc);
 
-    const students = await fetchLeaderboardStudents(activeStudioId);
+    const studentIds = await fetchStudentIds(activeStudioId);
+    if (!studentIds.length) {
+      if (container) container.innerHTML = "<p class=\"empty-state\">No students found for this studio.</p>";
+      if (countEl) countEl.textContent = "Showing 0 students";
+      if (popup) popup.style.display = "none";
+      return;
+    }
+
+    const students = await fetchStudentsByIds(studentIds, activeStudioId);
     if (!students.length) {
       if (container) container.innerHTML = "<p class=\"empty-state\">No students found for this studio.</p>";
       if (countEl) countEl.textContent = "Showing 0 students";
@@ -56,12 +58,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
+    const totals = buildTotalsFromUsers(students);
     if (countEl) countEl.textContent = `Showing ${students.length} students`;
 
     const activeStudentId = localStorage.getItem("aa.activeStudentId") || null;
-    const placements = buildPlacements(students, levels, activeStudentId);
+    const placements = buildPlacements(students, totals, levels, activeStudentId);
     renderAvatars(placements);
-    bindLeaderboardZoom({ zoomInput, zoomValue, placements });
 
     const reposition = debounce(() => positionAvatars(placements), 150);
     window.addEventListener("resize", reposition);
@@ -72,33 +74,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (popup) popup.style.display = "none";
   }
 });
-
-function bindLeaderboardZoom({ zoomInput, zoomValue, placements }) {
-  if (!zoomInput) return;
-
-  const applyZoom = () => {
-    const rawZoom = Number(zoomInput.value);
-    const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number.isFinite(rawZoom) ? rawZoom : MIN_ZOOM));
-    const avatarSize = Math.round(Math.max(34, 44 - ((zoom - 1) * 3)));
-
-    document.body.style.setProperty("--leaderboard-zoom", String(zoom));
-    document.body.style.setProperty("--leaderboard-width", `${zoom * 100}%`);
-    document.body.style.setProperty("--leaderboard-avatar-size", `${avatarSize}px`);
-    document.body.classList.toggle("is-leaderboard-zoomed", zoom > MIN_ZOOM);
-    if (zoomValue) {
-      zoomValue.value = `${zoom.toFixed(zoom % 1 === 0 ? 0 : 2)}x`;
-      zoomValue.textContent = zoomValue.value;
-    }
-
-    requestAnimationFrame(() => {
-      positionAvatars(placements);
-      window.setTimeout(() => positionAvatars(placements), ZOOM_POSITION_SETTLE_MS);
-    });
-  };
-
-  zoomInput.addEventListener("input", applyZoom);
-  applyZoom();
-}
 
 function renderLevelBars(container, levelsDesc) {
   if (!container) return;
@@ -128,28 +103,65 @@ function renderLevelBars(container, levelsDesc) {
   });
 }
 
-async function fetchLeaderboardStudents(studioId) {
-  const { data, error } = await supabase.rpc("get_leaderboard_students", {
-    p_studio_id: studioId
-  });
+async function fetchStudentIds(studioId) {
+  try {
+    const { data, error } = await supabase
+      .from("studio_members")
+      .select("user_id, roles")
+      .eq("studio_id", studioId)
+      .contains("roles", ["student"]);
+    if (error) throw error;
+    const ids = (data || []).map(r => r.user_id).filter(Boolean);
+    if (ids.length) return ids;
+  } catch (err) {
+    console.warn("[Leaderboard] studio_members fallback", err);
+  }
+
+  const { data: logs, error } = await supabase
+    .from("logs")
+    .select("userId")
+    .eq("studio_id", studioId)
+    .eq("status", "approved");
   if (error) {
-    console.error("[Leaderboard] safe leaderboard RPC failed", error);
+    console.error("[Leaderboard] logs fallback failed", error);
     return [];
   }
-  return Array.isArray(data) ? data : [];
+  return Array.from(new Set((logs || []).map(l => l.userId).filter(Boolean)));
 }
 
-function getStudentLeaderboardPoints(student) {
-  const points = Number(student?.points);
-  return Number.isFinite(points) ? points : 0;
+async function fetchStudentsByIds(ids, studioId) {
+  if (!ids.length) return [];
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, firstName, lastName, avatarUrl, roles, points, level, deactivated_at")
+    .in("id", ids)
+    .eq("studio_id", studioId)
+    .is("deactivated_at", null);
+  if (error) {
+    console.error("[Leaderboard] users fetch failed", error);
+    return [];
+  }
+  return (data || []).filter(u => {
+    const roles = Array.isArray(u.roles) ? u.roles : [u.roles].filter(Boolean);
+    return roles.includes("student");
+  });
 }
 
-function buildPlacements(students, levels, activeStudentId) {
+function buildTotalsFromUsers(students) {
+  const totals = {};
+  (students || []).forEach(student => {
+    const id = student.id;
+    totals[id] = Number(student.points || 0);
+  });
+  return totals;
+}
+
+function buildPlacements(students, totals, levels, activeStudentId) {
   const placements = [];
   const perLevelCount = {};
 
   students.forEach(student => {
-    const total = getStudentLeaderboardPoints(student);
+    const total = totals[student.id] || 0;
     const level = getLevelForPoints(total, levels);
     if (!level) return;
 
@@ -159,13 +171,12 @@ function buildPlacements(students, levels, activeStudentId) {
 
     const index = perLevelCount[level.id] || 0;
     perLevelCount[level.id] = index + 1;
-    const offset = getLevelOffset(index);
+    const offset = OFFSETS[index % OFFSETS.length];
 
     placements.push({
       student,
       total,
       levelId: level.id,
-      levelIndex: index,
       ratio,
       offset,
       isSelf: activeStudentId && String(student.id) === String(activeStudentId)
@@ -182,7 +193,7 @@ function renderAvatars(placements) {
 
     const avatar = document.createElement("img");
     avatar.className = `lb-avatar leaderboard-avatar${p.isSelf ? " is-self" : ""}`;
-    avatar.src = p.student.avatarUrl;
+    avatar.src = p.student.avatarUrl || "images/icons/default.png";
     const fullName = `${p.student.firstName ?? ""} ${p.student.lastName ?? ""}`.trim() || "Student";
     avatar.alt = fullName;
     avatar.title = `${fullName} — ${p.total} pts`;
@@ -203,12 +214,6 @@ function renderAvatars(placements) {
   requestAnimationFrame(() => positionAvatars(placements));
 }
 
-function getLevelOffset(index) {
-  const isMobile = window.matchMedia?.("(max-width: 700px)")?.matches;
-  const offsets = isMobile ? MOBILE_OFFSETS : OFFSETS;
-  return offsets[index % offsets.length];
-}
-
 function positionAvatars(placements) {
   placements.forEach(p => {
     const bar = p.bar;
@@ -218,10 +223,8 @@ function positionAvatars(placements) {
     const barWidth = bar.clientWidth || 0;
     const pad = Math.min(PAD_X, Math.max(12, barWidth * 0.08));
     const x = pad + p.ratio * Math.max(1, barWidth - pad * 2);
-    const offset = getLevelOffset(p.levelIndex ?? 0);
 
     avatar.style.left = `${x}px`;
-    avatar.style.top = `calc(50% + ${offset}px)`;
   });
 }
 

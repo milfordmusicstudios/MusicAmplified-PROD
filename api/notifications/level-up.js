@@ -71,6 +71,19 @@ function getAccessToken(req) {
   return "";
 }
 
+function getCompletedLevelRange(body) {
+  const explicitStart = Number(body.completedLevelStart || body.completed_level_start || 0);
+  const explicitEnd = Number(body.completedLevelEnd || body.completed_level_end || 0);
+  if (Number.isFinite(explicitStart) && Number.isFinite(explicitEnd) && explicitStart > 0 && explicitEnd >= explicitStart) {
+    return { start: explicitStart, end: explicitEnd };
+  }
+
+  const previousLevel = Number(body.previousLevel || body.previous_level || 0);
+  const newLevel = Number(body.newLevel || body.new_level || body.level || 0);
+  if (!Number.isFinite(previousLevel) || !Number.isFinite(newLevel) || previousLevel <= 0 || newLevel <= previousLevel) return null;
+  return { start: previousLevel, end: newLevel - 1 };
+}
+
 module.exports = async (req, res) => {
   let step = "init";
   let actorUserId = null;
@@ -80,7 +93,7 @@ module.exports = async (req, res) => {
   const fail = (status, stepName, details) => {
     const responseBody = {
       ok: false,
-      error: "Failed to create level-up notifications",
+      error: "Failed to create level completion notifications",
       step: stepName,
       details: details || "unknown_error",
       extra: {
@@ -126,13 +139,13 @@ module.exports = async (req, res) => {
   console.log("[LevelUpDiag][api/notifications/level-up.js] parsed-body", body);
   studentUserId = String(body.studentUserId || body.userId || "").trim() || null;
   const requestedStudioId = String(body.studioId || "").trim();
-  const level = Number(body.level || 0);
-  if (!studentUserId || !Number.isFinite(level) || level <= 0) {
-    logEarlyReturn(400, "missing_or_invalid_studentUserId_or_level", {
+  const completedRange = getCompletedLevelRange(body);
+  if (!studentUserId || !completedRange) {
+    logEarlyReturn(400, "missing_or_invalid_studentUserId_or_completed_level_range", {
       studentUserId,
-      level
+      completedRange
     });
-    return fail(400, "request.body_validation", "Missing studentUserId or level");
+    return fail(400, "request.body_validation", "Missing studentUserId or completed level range");
   }
 
   const url = process.env.SUPABASE_URL;
@@ -285,77 +298,27 @@ module.exports = async (req, res) => {
 
     step = "notifications.payload_build";
     const studentName = String(body.studentName || `${studentRow?.firstName || ""} ${studentRow?.lastName || ""}`.trim() || "Student");
-    const message = `${studentName} reached Level ${level}.`;
-    const relatedLogId = String(body.related_log_id || body.relatedLogId || "").trim() || null;
-    const payload = resolvedRecipientIds
-      .filter(Boolean)
-      .map((uid) => ({
-        userId: uid,
-        message,
-        type: "level_up",
-        read: false,
-        created_by: actorUserId,
-        ...(relatedLogId ? { related_log_id: relatedLogId } : {}),
-        studio_id: studioId
-      }))
-      .map((row) => {
-        const cleaned = { ...row };
-        delete cleaned.id;
-        if (cleaned.id == null) delete cleaned.id;
-        if (cleaned.related_log_id == null) delete cleaned.related_log_id;
-        return cleaned;
-      });
-
-    step = "notifications.dedupe_lookup";
-    const { data: existingRows, error: existingErr } = await admin
-      .from("notifications")
-      .select('user_id, "userId", message')
-      .eq("studio_id", studioId)
-      .eq("type", "level_up")
-      .eq("message", message);
-    if (existingErr) {
-      throwStep("notifications.dedupe_lookup", existingErr, { studioId, studentUserId, level });
-    }
-
-    const existingKeys = new Set((existingRows || []).map((row) => {
-      const uid = String(row?.user_id || row?.userId || "").trim();
-      return `${uid}:${String(row?.message || "")}`;
-    }));
-    const dedupedPayload = payload.filter((row) => {
-      const uid = String(row?.userId || row?.user_id || "").trim();
-      return !existingKeys.has(`${uid}:${message}`);
-    });
-
-    const payloadKeys = Array.from(
-      dedupedPayload.reduce((set, row) => {
-        Object.keys(row || {}).forEach((key) => set.add(key));
-        return set;
-      }, new Set())
-    );
-    console.log("[LevelUpDiag][api/notifications/level-up.js] final-payload-keys", {
-      keys: payloadKeys
-    });
-
-    console.log("[LevelUpDiag][api/notifications/level-up.js] insert-payload", {
-      source: "api/notifications/level-up.js::insertLevelUpNotifications",
-      payload: dedupedPayload,
-      skippedDuplicates: payload.length - dedupedPayload.length,
-      resolved_userId: dedupedPayload.map((row) => row.userId),
+    const rpcPayload = {
+      p_studio_id: studioId,
+      p_student_id: studentUserId,
+      p_student_name: studentName,
+      p_completed_level_start: completedRange.start,
+      p_completed_level_end: completedRange.end,
+      p_created_by: actorUserId,
+      p_recipient_ids: resolvedRecipientIds
+    };
+    console.log("[LevelUpDiag][api/notifications/level-up.js] rpc-payload", {
+      source: "api/notifications/level-up.js::insert_level_completed_notifications",
+      payload: rpcPayload,
+      resolved_user_id: resolvedRecipientIds,
       resolved_studio_id: studioId,
-      resolved_created_by: actorUserId,
-      resolved_related_log_id: dedupedPayload.map((row) => row.related_log_id ?? null)
+      resolved_created_by: actorUserId
     });
-    if (!dedupedPayload.length) {
-      console.log("[LevelUpDiag][api/notifications/level-up.js] success-noop-duplicate", {
-        resolvedStudioId: studioId,
-        resolvedTargetUserIds: resolvedRecipientIds,
-        level
-      });
-      return res.status(200).json({ ok: true, recipientCount: 0, skippedDuplicates: payload.length });
-    }
-
-    step = "notifications.insert";
-    const { data: insertData, error: insertErr } = await admin.from("notifications").insert(dedupedPayload);
+    step = "notifications.insert_level_completed_notifications";
+    const { data: insertData, error: insertErr } = await admin.rpc(
+      "insert_level_completed_notifications",
+      rpcPayload
+    );
     console.log("[LevelUpDiag][api/notifications/level-up.js] insert-result", {
       source: "api/notifications/level-up.js::insertLevelUpNotifications",
       data: insertData ?? null,
@@ -363,26 +326,15 @@ module.exports = async (req, res) => {
       summary: insertErr ? "insert_error" : "insert_ok"
     });
     if (insertErr) {
-      if (insertErr?.code === "23505") {
-        console.warn("[LevelUpDiag][api/notifications/level-up.js] duplicate-protected-by-db", {
-          source: "api/notifications/level-up.js::insertLevelUpNotifications",
-          error: insertErr?.message || null,
-          resolvedStudioId: studioId,
-          resolvedTargetUserIds: resolvedRecipientIds,
-          level
-        });
-        return res.status(200).json({ ok: true, recipientCount: 0, skippedDuplicates: dedupedPayload.length });
-      }
       return fail(500, "notifications.insert", insertErr?.message || "unknown_insert_error");
     }
 
     console.log("[LevelUpDiag][api/notifications/level-up.js] success", {
       resolvedStudioId: studioId,
       resolvedTargetUserIds: resolvedRecipientIds,
-      payloadCount: dedupedPayload.length,
-      skippedDuplicates: payload.length - dedupedPayload.length
+      insertedCount: Number(insertData || 0)
     });
-    return res.status(200).json({ ok: true, recipientCount: dedupedPayload.length, skippedDuplicates: payload.length - dedupedPayload.length });
+    return res.status(200).json({ ok: true, recipientCount, insertedCount: Number(insertData || 0) });
   } catch (error) {
     const details = error?.message || String(error || "unknown_error");
     const failedStep = error?.step || step || "unknown";
