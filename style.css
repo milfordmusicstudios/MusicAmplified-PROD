@@ -6367,17 +6367,35 @@ body.settings-page .settings-panel-host {
 .manage-users-pagination {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 10px;
+  justify-content: flex-start;
+  gap: 12px;
   flex-wrap: wrap;
-  margin: 14px 0 0;
+  margin: 8px 0 14px;
 }
 
-.manage-users-pagination .blue-button,
-.manage-users-pagination select.blue-button {
+.manage-users-pagination .blue-button {
   width: auto;
   min-width: 86px;
   padding: 8px 14px;
+}
+
+.manage-users-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #0b4f8a;
+  font-weight: 700;
+}
+
+.manage-users-page-size select {
+  min-width: 76px;
+  padding: 8px 30px 8px 12px;
+  border: 1px solid #b8c9da;
+  border-radius: 10px;
+  background: #fff;
+  color: #0b3c66;
+  font: inherit;
+  font-weight: 700;
 }
 
 .manage-users-page-info {

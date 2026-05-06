@@ -462,12 +462,15 @@ function renderManageUsersPagination(filteredCount, totalRows) {
     renderUsers(totalRows);
   });
 
+  const pageSizeLabel = document.createElement("label");
+  pageSizeLabel.className = "manage-users-page-size";
+  const pageSizeText = document.createElement("span");
+  pageSizeText.textContent = "Rows per page";
   const pageSizeSelect = document.createElement("select");
-  pageSizeSelect.className = "blue-button";
   [25, 50, 100].forEach((size) => {
     const option = document.createElement("option");
     option.value = String(size);
-    option.textContent = `${size} per page`;
+    option.textContent = String(size);
     if (size === pageSize) option.selected = true;
     pageSizeSelect.appendChild(option);
   });
@@ -478,10 +481,12 @@ function renderManageUsersPagination(filteredCount, totalRows) {
     renderUsers(totalRows);
   });
 
+  pageSizeLabel.appendChild(pageSizeText);
+  pageSizeLabel.appendChild(pageSizeSelect);
+  controls.appendChild(pageSizeLabel);
   controls.appendChild(prevBtn);
   controls.appendChild(pageInfo);
   controls.appendChild(nextBtn);
-  controls.appendChild(pageSizeSelect);
 }
 
 function updateSortHeaderState() {
