@@ -170,10 +170,18 @@
           <button id="filterLogsClose" class="modal-close" type="button" aria-label="Close filter logs modal">&times;</button>
         </div>
         <div class="filter-logs-modal-body">
-          <label for="filterStudent">Student</label>
-          <select id="filterStudent" class="white-input">
-            <option value="">Any student</option>
-          </select>
+          <label for="filterStudentSearch">Students</label>
+          <div class="staff-student-picker review-filter-student-picker">
+            <input
+              id="filterStudentSearch"
+              class="white-input"
+              type="text"
+              placeholder="Type a student name..."
+              autocomplete="off"
+            />
+            <div id="filterStudentsDropdown" class="staff-student-dropdown" hidden></div>
+            <div id="filterStudentsSelected" class="staff-student-selected" aria-live="polite"></div>
+          </div>
 
           <div class="filter-logs-date-grid">
             <label for="filterDateFrom">
@@ -225,7 +233,7 @@
   <script type="module" src="studio-routing.js"></script>
   <script type="module" src="nav.js"></script>
 
-  <script type="module" src="review-logs.js?v=20260505-4"></script>
+  <script type="module" src="review-logs.js?v=20260505-5"></script>
   <script type="module" src="pwa-install.js"></script>
 </body>
 </html>

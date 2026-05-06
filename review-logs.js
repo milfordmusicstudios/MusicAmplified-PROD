@@ -196,7 +196,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const filterLogsBtn = document.getElementById("filterLogsBtn");
   const filterLogsModal = document.getElementById("filterLogsModal");
   const filterLogsClose = document.getElementById("filterLogsClose");
-  const filterStudent = document.getElementById("filterStudent");
+  const filterStudentSearch = document.getElementById("filterStudentSearch");
+  const filterStudentsDropdown = document.getElementById("filterStudentsDropdown");
+  const filterStudentsSelected = document.getElementById("filterStudentsSelected");
   const filterDateFrom = document.getElementById("filterDateFrom");
   const filterDateTo = document.getElementById("filterDateTo");
   const filterKeyword = document.getElementById("filterKeyword");
@@ -215,13 +217,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   let logsPerPage = 25;
   let activeCardFilter = "all";
   let serverLogFilters = {
-    studentId: "",
+    studentIds: [],
     dateFrom: "",
     dateTo: "",
     keyword: "",
     category: "",
     status: ""
   };
+  let filterStudentRoster = [];
+  const filterSelectedStudentIds = new Set();
   let pendingCardFlashPlayed = false;
   const LOG_FETCH_PAGE_SIZE = 1000;
   const LOG_FETCH_ADMIN_CAP = 20000;
@@ -412,7 +416,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const normalizeFilterValue = (value) => String(value || "").trim();
   const hasServerFilters = () => Boolean(
-    serverLogFilters.studentId ||
+    serverLogFilters.studentIds?.length ||
     serverLogFilters.dateFrom ||
     serverLogFilters.dateTo ||
     serverLogFilters.keyword ||
@@ -423,27 +427,120 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!viewerContext.isTeacher || viewerContext.isAdmin) return users;
     return users.filter(u => Array.isArray(u.teacherIds) && u.teacherIds.map(String).includes(String(viewerContext.viewerUserId)));
   };
-  const populateFilterStudentOptions = () => {
-    if (!(filterStudent instanceof HTMLSelectElement)) return;
-    const selected = filterStudent.value;
-    const visibleStudents = getVisibleStudents()
-      .slice()
-      .sort((a, b) => {
-        const aName = `${a.firstName || ""} ${a.lastName || ""}`.trim().toLowerCase();
-        const bName = `${b.firstName || ""} ${b.lastName || ""}`.trim().toLowerCase();
-        return aName.localeCompare(bName);
+  const getFilterStudentName = (student) => getQuickAddStudentName(student);
+  const renderFilterSelectedStudents = () => {
+    if (!filterStudentsSelected) return;
+    filterStudentsSelected.innerHTML = "";
+    if (!filterSelectedStudentIds.size) {
+      const empty = document.createElement("span");
+      empty.className = "staff-student-empty";
+      empty.textContent = "No students selected";
+      filterStudentsSelected.appendChild(empty);
+      return;
+    }
+    filterStudentRoster
+      .filter((student) => filterSelectedStudentIds.has(String(student.id)))
+      .forEach((student) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "staff-student-chip";
+        chip.dataset.studentId = String(student.id);
+        chip.textContent = `${getFilterStudentName(student)} x`;
+        chip.addEventListener("click", () => {
+          filterSelectedStudentIds.delete(String(student.id));
+          renderFilterSelectedStudents();
+          renderFilterStudentDropdown();
+        });
+        filterStudentsSelected.appendChild(chip);
       });
-    filterStudent.innerHTML = `<option value="">Any student</option>`;
-    visibleStudents.forEach((student) => {
-      const option = document.createElement("option");
-      option.value = String(student.id || "");
-      option.textContent = `${student.firstName || ""} ${student.lastName || ""}`.trim() || student.email || "Unnamed student";
-      filterStudent.appendChild(option);
+  };
+  const renderFilterStudentDropdown = () => {
+    if (!filterStudentSearch || !filterStudentsDropdown) return;
+    const query = String(filterStudentSearch.value || "").trim().toLowerCase();
+    filterStudentsDropdown.innerHTML = "";
+    if (!query) {
+      filterStudentsDropdown.setAttribute("hidden", "");
+      return;
+    }
+    const matches = filterStudentRoster.filter((student) =>
+      getFilterStudentName(student).toLowerCase().includes(query)
+    );
+    if (!matches.length) {
+      const empty = document.createElement("div");
+      empty.className = "staff-student-no-match";
+      empty.textContent = "No matching students";
+      filterStudentsDropdown.appendChild(empty);
+      filterStudentsDropdown.removeAttribute("hidden");
+      return;
+    }
+    matches.forEach((student) => {
+      const id = String(student.id);
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "staff-student-option";
+      item.dataset.studentId = id;
+      const isSelected = filterSelectedStudentIds.has(id);
+      item.textContent = isSelected ? `Selected: ${getFilterStudentName(student)}` : getFilterStudentName(student);
+      if (isSelected) item.classList.add("is-selected");
+      item.addEventListener("click", () => {
+        if (filterSelectedStudentIds.has(id)) filterSelectedStudentIds.delete(id);
+        else filterSelectedStudentIds.add(id);
+        renderFilterSelectedStudents();
+        renderFilterStudentDropdown();
+        filterStudentSearch.focus();
+      });
+      filterStudentsDropdown.appendChild(item);
     });
-    filterStudent.value = selected;
+    filterStudentsDropdown.removeAttribute("hidden");
+  };
+  const loadFilterStudents = async () => {
+    if (!filterStudentSearch) return;
+    const { data, error } = await supabase
+      .from("users")
+      .select("id, firstName, lastName, email, roles, teacherIds")
+      .eq("studio_id", viewerContext.studioId)
+      .eq("active", true)
+      .is("deactivated_at", null);
+    if (error) {
+      console.error("[ReviewLogs] filter students failed", error);
+      filterStudentRoster = [];
+      filterStudentSearch.value = "";
+      filterStudentSearch.placeholder = "Error loading students";
+      filterStudentSearch.disabled = true;
+      renderFilterSelectedStudents();
+      return;
+    }
+    filterStudentRoster = (data || [])
+      .filter((student) => {
+        const displayName = getFilterStudentName(student);
+        if (!displayName || displayName === "Student") return false;
+        const roles = Array.isArray(student.roles) ? student.roles : [student.roles];
+        const isStudent = roles.map((role) => String(role || "").toLowerCase()).includes("student");
+        if (!isStudent) return false;
+        if (viewerContext.isAdmin) return true;
+        if (!viewerContext.isTeacher) return false;
+        const teacherIds = Array.isArray(student.teacherIds) ? student.teacherIds.map(String) : [];
+        return teacherIds.includes(String(viewerContext.viewerUserId));
+      })
+      .sort((a, b) => getFilterStudentName(a).localeCompare(getFilterStudentName(b), undefined, { sensitivity: "base" }));
+    const validIds = new Set(filterStudentRoster.map((student) => String(student.id)));
+    Array.from(filterSelectedStudentIds).forEach((id) => {
+      if (!validIds.has(id)) filterSelectedStudentIds.delete(id);
+    });
+    filterStudentSearch.disabled = false;
+    filterStudentSearch.placeholder = filterStudentRoster.length ? "Type a student name..." : "No students found";
+    renderFilterSelectedStudents();
+    renderFilterStudentDropdown();
   };
   const syncFilterModalFields = () => {
-    if (filterStudent instanceof HTMLSelectElement) filterStudent.value = serverLogFilters.studentId;
+    filterSelectedStudentIds.clear();
+    (serverLogFilters.studentIds || []).forEach((id) => {
+      const normalized = String(id || "").trim();
+      if (normalized) filterSelectedStudentIds.add(normalized);
+    });
+    if (filterStudentSearch instanceof HTMLInputElement) filterStudentSearch.value = "";
+    renderFilterSelectedStudents();
+    renderFilterStudentDropdown();
     if (filterDateFrom instanceof HTMLInputElement) filterDateFrom.value = serverLogFilters.dateFrom;
     if (filterDateTo instanceof HTMLInputElement) filterDateTo.value = serverLogFilters.dateTo;
     if (filterKeyword instanceof HTMLInputElement) filterKeyword.value = serverLogFilters.keyword;
@@ -451,7 +548,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (filterStatus instanceof HTMLSelectElement) filterStatus.value = serverLogFilters.status;
   };
   const collectFilterModalFields = () => ({
-    studentId: normalizeFilterValue(filterStudent?.value),
+    studentIds: Array.from(filterSelectedStudentIds),
     dateFrom: getDateOnlyString(filterDateFrom?.value),
     dateTo: getDateOnlyString(filterDateTo?.value),
     keyword: normalizeFilterValue(filterKeyword?.value),
@@ -459,13 +556,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     status: normalizeFilterValue(filterStatus?.value).toLowerCase()
   });
   const getStudentNameById = (studentId) => {
-    const row = users.find(u => String(u.id) === String(studentId));
-    return row ? `${row.firstName || ""} ${row.lastName || ""}`.trim() : "";
+    const row = filterStudentRoster.find(u => String(u.id) === String(studentId))
+      || users.find(u => String(u.id) === String(studentId));
+    return row ? getFilterStudentName(row) : "";
   };
   const renderActiveFiltersSummary = () => {
     if (!activeFiltersSummary) return;
     const parts = [];
-    if (serverLogFilters.studentId) parts.push(getStudentNameById(serverLogFilters.studentId) || "Selected student");
+    if (serverLogFilters.studentIds?.length) {
+      parts.push(serverLogFilters.studentIds.map((id) => getStudentNameById(id)).filter(Boolean).join(", ") || "Selected students");
+    }
     if (serverLogFilters.category) parts.push(serverLogFilters.category.replace(/\b\w/g, c => c.toUpperCase()));
     if (serverLogFilters.status) parts.push(serverLogFilters.status.replace(/\b\w/g, c => c.toUpperCase()));
     if (serverLogFilters.dateFrom || serverLogFilters.dateTo) {
@@ -499,8 +599,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       .range(from, to);
     if (serverLogFilters.dateFrom) query = query.gte("date", serverLogFilters.dateFrom);
     if (serverLogFilters.dateTo) query = query.lte("date", serverLogFilters.dateTo);
-    if (serverLogFilters.studentId) {
-      query = query.eq("userId", serverLogFilters.studentId);
+    if (serverLogFilters.studentIds?.length) {
+      query = query.in("userId", serverLogFilters.studentIds);
     } else if (Array.isArray(teacherStudentIds)) {
       if (!teacherStudentIds.length) return { data: [], error: null };
       query = query.in("userId", teacherStudentIds);
@@ -540,7 +640,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (usersError) throw usersError;
 
     users = usersData || [];
-    populateFilterStudentOptions();
     const logsData = await fetchLogsPaginated();
     allLogs = (logsData || []).map(l => ({
       ...l,
@@ -563,15 +662,17 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Search + Card Filter
   searchInput.addEventListener("input", applyFilters);
-  const openFilterLogsModal = () => {
-    populateFilterStudentOptions();
+  const openFilterLogsModal = async () => {
     syncFilterModalFields();
+    await loadFilterStudents();
     if (filterLogsModal) filterLogsModal.style.display = "flex";
   };
   const closeFilterLogsModal = () => {
     if (filterLogsModal) filterLogsModal.style.display = "none";
   };
-  filterLogsBtn?.addEventListener("click", openFilterLogsModal);
+  filterLogsBtn?.addEventListener("click", () => {
+    void openFilterLogsModal();
+  });
   filterLogsClose?.addEventListener("click", closeFilterLogsModal);
   filterLogsModal?.addEventListener("click", (event) => {
     if (event.target === filterLogsModal) closeFilterLogsModal();
@@ -592,13 +693,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   resetLogFiltersBtn?.addEventListener("click", async () => {
     serverLogFilters = {
-      studentId: "",
+      studentIds: [],
       dateFrom: "",
       dateTo: "",
       keyword: "",
       category: "",
       status: ""
     };
+    filterSelectedStudentIds.clear();
     syncFilterModalFields();
     currentPage = 1;
     try {
@@ -606,6 +708,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (err) {
       console.error("[ReviewLogs] reset filtered load failed", err);
       showReviewLogsError("Failed to reload logs.", err);
+    }
+  });
+  filterStudentSearch?.addEventListener("input", renderFilterStudentDropdown);
+  filterStudentSearch?.addEventListener("focus", renderFilterStudentDropdown);
+  document.addEventListener("click", (event) => {
+    if (!filterStudentSearch || !filterStudentsDropdown) return;
+    const picker = filterStudentSearch.closest(".staff-student-picker");
+    if (!picker) return;
+    if (!picker.contains(event.target)) filterStudentsDropdown.setAttribute("hidden", "");
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && filterStudentsDropdown) {
+      filterStudentsDropdown.setAttribute("hidden", "");
     }
   });
 
@@ -619,7 +734,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const matchesQuickSearch = !quickKeyword || notesText.includes(quickKeyword);
       const matchesModalKeyword = !modalKeyword || notesText.includes(modalKeyword);
       const logDate = getDateOnlyString(l.date);
-      const matchesStudent = !serverLogFilters.studentId || String(l.userId) === String(serverLogFilters.studentId);
+      const matchesStudent = !serverLogFilters.studentIds?.length || serverLogFilters.studentIds.map(String).includes(String(l.userId));
       const matchesDateFrom = !serverLogFilters.dateFrom || (logDate && logDate >= serverLogFilters.dateFrom);
       const matchesDateTo = !serverLogFilters.dateTo || (logDate && logDate <= serverLogFilters.dateTo);
       const matchesCategory = !serverLogFilters.category || String(l.category || "").toLowerCase() === serverLogFilters.category;
