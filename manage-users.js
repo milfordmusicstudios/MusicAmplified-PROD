@@ -792,6 +792,19 @@ function updateActiveButton(button, isActive) {
   button.classList.toggle("cancel-btn", !isActive);
 }
 
+function createActiveCell(user) {
+  const td = document.createElement("td");
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "mini-edit-btn";
+  updateActiveButton(toggle, !user.deactivated_at);
+  toggle.addEventListener("click", async () => {
+    await toggleUserActive(user, toggle);
+  });
+  td.appendChild(toggle);
+  return td;
+}
+
 function createActionsCell(user) {
   const td = document.createElement("td");
   td.className = "actions-cell";
@@ -817,7 +830,7 @@ function createCellForColumn(columnKey, user) {
   if (columnKey === "teacherIds") return createMultiSelectCell(user, "teacherIds", teacherOptions, "teacher-select");
   if (columnKey === "instrument") return createMultiSelectCell(user, "instrument", instrumentOptions, "instrument-select");
   if (columnKey === "points" || columnKey === "level") return createCell(getDisplayValue(user, columnKey));
-  if (columnKey === "active") return createCell(getDisplayValue(user, "active"));
+  if (columnKey === "active") return createActiveCell(user);
   if (columnKey === "actions") return createActionsCell(user);
   return createCell("-");
 }
@@ -959,20 +972,26 @@ async function toggleUserActive(user, button) {
   const nextDeactivatedAt = currentlyActive ? new Date().toISOString() : null;
   const nextActiveFlag = !currentlyActive;
 
-  const { error } = await supabase
-    .from("users")
-    .update({ deactivated_at: nextDeactivatedAt, active: nextActiveFlag })
-    .eq("id", user.id);
+  if (button) button.disabled = true;
+  const { data, error } = await supabase.rpc("set_manage_user_active", {
+    p_studio_id: user.studio_id,
+    p_user_id: user.id,
+    p_active: nextActiveFlag
+  });
   if (error) {
     renderStatus("Failed to update active status: " + error.message, true);
+    if (button) button.disabled = false;
     return;
   }
 
-  user.deactivated_at = nextDeactivatedAt;
-  user.active = nextActiveFlag;
+  const updated = Array.isArray(data) ? data[0] : data;
+  user.deactivated_at = updated?.deactivated_at ?? nextDeactivatedAt;
+  user.active = typeof updated?.active === "boolean" ? updated.active : nextActiveFlag;
 
-  updateActiveButton(button, nextActiveFlag);
-  renderStatus(nextActiveFlag ? "User activated." : "User deactivated.");
+  updateActiveButton(button, user.active);
+  if (button) button.disabled = false;
+  renderStatus(user.active ? "User activated." : "User deactivated.");
+  renderUsers();
 }
 
 async function uploadAvatarForUser(user, file, imgEl) {
