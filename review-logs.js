@@ -1227,6 +1227,7 @@ const logsWrapper = document.getElementById("logsWrapper");
 const notificationsSection = document.getElementById("notificationsSection");
 const NOTIFICATION_FETCH_PAGE_SIZE = 1000;
 const NOTIFICATION_FETCH_ADMIN_CAP = 20000;
+const NOTIFICATION_RENDER_PAGE_SIZE = 100;
 
 const isLevelUpNotification = (row) => {
   const type = String(row?.type || "").toLowerCase();
@@ -1272,17 +1273,7 @@ const mergeNotificationRows = (rowSets, limit) => {
   const merged = [];
   rowSets.flat().forEach((row) => {
     if (!row) return;
-    const type = String(row?.type || "").toLowerCase();
-    const eventKey = type === "level_completed"
-      ? [
-          "level_completed",
-          row?.studio_id || "",
-          row?.message || "",
-          row?.completed_level_start ?? "",
-          row?.completed_level_end ?? ""
-        ].join("|")
-      : "";
-    const key = eventKey || String(row?.id || `${row?.created_at || ""}:${row?.message || ""}:${row?.userId || row?.user_id || ""}`);
+    const key = String(row?.id || `${row?.created_at || ""}:${row?.message || ""}:${row?.userId || row?.user_id || ""}`);
     if (seen.has(key)) return;
     seen.add(key);
     merged.push(row);
@@ -1291,8 +1282,13 @@ const mergeNotificationRows = (rowSets, limit) => {
 };
 
 const markNotificationsRead = async (rows) => {
+  const viewerUserId = String(viewerContext?.viewerUserId || "").trim();
   const unreadIds = (Array.isArray(rows) ? rows : [])
-    .filter((row) => !isNotificationRead(row))
+    .filter((row) => {
+      if (isNotificationRead(row)) return false;
+      const rowUserId = String(row?.user_id || row?.userId || "").trim();
+      return rowUserId && rowUserId === viewerUserId;
+    })
     .map((row) => String(row?.id || "").trim())
     .filter(Boolean);
   if (!unreadIds.length) return;
@@ -1428,7 +1424,7 @@ async function fetchNotificationsAttemptPages(attempt, limit) {
   for (let from = 0; from < maxRows; from += NOTIFICATION_FETCH_PAGE_SIZE) {
     const to = Math.min(from + NOTIFICATION_FETCH_PAGE_SIZE - 1, maxRows - 1);
     const filters = {
-      [attempt.userKey]: viewerUserId,
+      ...(attempt.userKey ? { [attempt.userKey]: viewerUserId } : {}),
       studio_id: attempt.includeStudio ? activeStudioId : "(omitted)",
       range: `${from}-${to}`,
       orderBy: "created_at desc"
@@ -1441,9 +1437,11 @@ async function fetchNotificationsAttemptPages(attempt, limit) {
     let query = supabase
       .from("notifications")
       .select("*")
-      .eq(attempt.userKey, viewerUserId)
       .order("created_at", { ascending: false })
       .range(from, to);
+    if (attempt.userKey) {
+      query = query.eq(attempt.userKey, viewerUserId);
+    }
     if (attempt.includeStudio) {
       query = query.eq("studio_id", activeStudioId);
     }
@@ -1467,11 +1465,14 @@ async function fetchViewerNotifications(limit = NOTIFICATION_FETCH_ADMIN_CAP) {
   const viewerUserId = String(viewerContext?.viewerUserId || "").trim();
   const activeStudioId = String(viewerContext?.studioId || "").trim();
   const maxRows = Number.isFinite(Number(limit)) ? Number(limit) : NOTIFICATION_FETCH_ADMIN_CAP;
-  const attempts = [
-    { label: "user_id+studio_id", userKey: "user_id", includeStudio: Boolean(activeStudioId) },
-    { label: "user_id:no_studio_filter", userKey: "user_id", includeStudio: false },
-    { label: "legacy_userId+studio_id", userKey: "userId", includeStudio: Boolean(activeStudioId), legacyOnly: true }
-  ];
+  const staffCanViewStudioNotifications = Boolean(activeStudioId && (viewerContext?.isAdmin || viewerContext?.isTeacher));
+  const attempts = staffCanViewStudioNotifications
+    ? [{ label: "studio_id:all_notifications", userKey: "", includeStudio: true, studioOnly: true }]
+    : [
+        { label: "user_id+studio_id", userKey: "user_id", includeStudio: Boolean(activeStudioId) },
+        { label: "user_id:no_studio_filter", userKey: "user_id", includeStudio: false },
+        { label: "legacy_userId+studio_id", userKey: "userId", includeStudio: Boolean(activeStudioId), legacyOnly: true }
+      ];
   console.log("[NotifDiag][review-logs.js][fetchViewerNotifications] query plan", {
     source: "review-logs.js::fetchViewerNotifications",
     viewerUserId,
@@ -1479,13 +1480,20 @@ async function fetchViewerNotifications(limit = NOTIFICATION_FETCH_ADMIN_CAP) {
     limit: maxRows,
     pageSize: NOTIFICATION_FETCH_PAGE_SIZE,
     attempts: attempts.map((attempt) => attempt.label),
-    reason: "Fetch canonical user_id rows first; legacy userId is fallback only; page through results."
+    activeFilters: staffCanViewStudioNotifications
+      ? { studio_id: activeStudioId || null }
+      : { viewerUserId, studio_id: activeStudioId || null },
+    reason: staffCanViewStudioNotifications
+      ? "Staff notification tab fetches every notification in the active studio with pagination."
+      : "Fetch canonical user_id rows first; legacy userId is fallback only; page through results."
   });
   const rowSets = [];
   const errors = [];
+  let rawFetchedCount = 0;
   for (const attempt of attempts) {
     const { data, error } = await fetchNotificationsAttemptPages(attempt, maxRows);
     const count = Array.isArray(data) ? data.length : 0;
+    rawFetchedCount += count;
     if (error) {
       errors.push({ attempt: attempt.label, error });
       continue;
@@ -1499,8 +1507,13 @@ async function fetchViewerNotifications(limit = NOTIFICATION_FETCH_ADMIN_CAP) {
     viewerUserId,
     activeStudioId: activeStudioId || null,
     mergedCount: merged.length,
+    totalNotificationsFetched: rawFetchedCount,
+    totalNotificationsAfterMerge: merged.length,
     pageSize: NOTIFICATION_FETCH_PAGE_SIZE,
     cap: maxRows,
+    activeFilters: staffCanViewStudioNotifications
+      ? { studio_id: activeStudioId || null }
+      : { viewerUserId, studio_id: activeStudioId || null },
     errorCount: errors.length,
     errors
   });
@@ -1620,16 +1633,33 @@ async function loadNotifications(statusText = "") {
     return;
   }
 
-  const uniqueNotifications = mergeNotificationRows([notifications], NOTIFICATION_FETCH_ADMIN_CAP);
+  const uniqueNotifications = sortNotificationsNewestFirst(mergeNotificationRows([notifications], NOTIFICATION_FETCH_ADMIN_CAP));
   await markNotificationsRead(uniqueNotifications);
   const normalizedNotifications = uniqueNotifications.map((row) => ({ ...row, read: true }));
+
+  console.log("[ReviewLogs] notifications fetched for render", {
+    totalNotificationsFetched: Array.isArray(notifications) ? notifications.length : 0,
+    totalNotificationsAfterMerge: normalizedNotifications.length,
+    activeFilters: {
+      studio_id: viewerContext?.studioId || null,
+      viewerCanSeeStudioNotifications: Boolean(viewerContext?.isAdmin || viewerContext?.isTeacher),
+      search: null,
+      filters: null
+    }
+  });
+
+  let renderedCount = Math.min(NOTIFICATION_RENDER_PAGE_SIZE, normalizedNotifications.length);
+  const countEl = document.createElement("div");
+  countEl.className = "notification-count-summary";
 
   const list = document.createElement("ul");
   list.className = "review-notification-list";
   list.style.listStyle = "none";
   list.style.padding = "0";
-  list.innerHTML = `
-    <li class="review-notification-header" aria-hidden="true">
+  const header = document.createElement("li");
+  header.className = "review-notification-header";
+  header.setAttribute("aria-hidden", "true");
+  header.innerHTML = `
       <div class="review-notification-header-main">Notification</div>
       <div class="review-notification-header-recognition">
         <span>Recognition given</span>
@@ -1640,10 +1670,12 @@ async function loadNotifications(statusText = "") {
           aria-label="Recognition given help"
         >?</button>
       </div>
-    </li>
   `;
+  list.appendChild(header);
 
-  normalizedNotifications.forEach(n => {
+  const renderNotificationRows = () => {
+    list.querySelectorAll(".review-notification-item").forEach((item) => item.remove());
+    normalizedNotifications.slice(0, renderedCount).forEach(n => {
     const li = document.createElement("li");
     const recognized = isRecognitionGiven(n);
     const isLevelUp = isLevelUpNotification(n);
@@ -1737,11 +1769,39 @@ async function loadNotifications(statusText = "") {
       });
     }
     list.appendChild(li);
+    });
+    countEl.textContent = `Showing ${Math.min(renderedCount, normalizedNotifications.length)} of ${normalizedNotifications.length} notifications`;
+    console.log("[ReviewLogs] notifications rendered", {
+      totalNotificationsFetched: Array.isArray(notifications) ? notifications.length : 0,
+      totalNotificationsRendered: Math.min(renderedCount, normalizedNotifications.length),
+      totalNotificationsAvailable: normalizedNotifications.length,
+      activeFilters: {
+        studio_id: viewerContext?.studioId || null,
+        viewerCanSeeStudioNotifications: Boolean(viewerContext?.isAdmin || viewerContext?.isTeacher),
+        search: null,
+        filters: null
+      }
+    });
+  };
+
+  const loadMoreBtn = document.createElement("button");
+  loadMoreBtn.type = "button";
+  loadMoreBtn.className = "blue-button notification-load-more";
+  loadMoreBtn.textContent = "Load More";
+  loadMoreBtn.addEventListener("click", () => {
+    renderedCount = Math.min(renderedCount + NOTIFICATION_RENDER_PAGE_SIZE, normalizedNotifications.length);
+    renderNotificationRows();
+    loadMoreBtn.style.display = renderedCount < normalizedNotifications.length ? "" : "none";
   });
+
+  renderNotificationRows();
+  loadMoreBtn.style.display = renderedCount < normalizedNotifications.length ? "" : "none";
 
   notificationsSection.innerHTML = "";
   notificationsSection.appendChild(createNotificationAdminControls(statusText));
+  notificationsSection.appendChild(countEl);
   notificationsSection.appendChild(list);
+  notificationsSection.appendChild(loadMoreBtn);
   await updateNotificationsButtonState();
 }
 

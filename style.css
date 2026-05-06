@@ -4426,6 +4426,17 @@ body.review-logs-page .notification-admin-status {
   font-weight: 800;
 }
 
+body.review-logs-page .notification-count-summary {
+  color: #0B4F8A;
+  font-size: 14px;
+  font-weight: 900;
+  margin: 0 0 10px;
+}
+
+body.review-logs-page .notification-load-more {
+  display: block;
+  margin: 14px auto 0;
+}
 
 body.review-logs-page .logs-table-wrap {
   margin-top: 12px;
