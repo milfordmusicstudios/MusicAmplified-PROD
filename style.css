@@ -6364,6 +6364,27 @@ body.settings-page .settings-panel-host {
   margin: 8px 0 12px;
 }
 
+.manage-users-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 14px 0 0;
+}
+
+.manage-users-pagination .blue-button,
+.manage-users-pagination select.blue-button {
+  width: auto;
+  min-width: 86px;
+  padding: 8px 14px;
+}
+
+.manage-users-page-info {
+  color: #0b4f8a;
+  font-weight: 700;
+}
+
 .manage-users-table-wrap {
   overflow-x: auto;
   border: 1px solid #d9e6f3;

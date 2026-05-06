@@ -17,6 +17,8 @@ let statusFilter = "active";
 let liveSyncChannel = null;
 let liveSyncStudioId = "";
 let refreshQueuedTimer = null;
+let manageUsersCurrentPage = 1;
+let manageUsersPageSize = 50;
 
 const EDITABLE_TEXT_FIELD_TYPES = {
   firstName: "text",
@@ -134,6 +136,7 @@ function bindManageUsersTabs() {
       if (nextTab === activeTab) return;
       activeTab = nextTab;
       statusFilter = "active";
+      manageUsersCurrentPage = 1;
       await refreshManageUsers();
     });
   });
@@ -147,6 +150,7 @@ function bindStatusToggle() {
       const nextStatus = normalizeStatusFilter(button.dataset.status);
       if (nextStatus === statusFilter) return;
       statusFilter = nextStatus;
+      manageUsersCurrentPage = 1;
       await refreshManageUsers();
     });
   });
@@ -420,6 +424,66 @@ function getSortedUsers(users) {
   return sorted;
 }
 
+function renderManageUsersPagination(filteredCount, totalRows) {
+  const controls = document.getElementById("paginationControls");
+  if (!controls) return;
+  controls.innerHTML = "";
+  controls.className = "manage-users-pagination";
+
+  const pageSize = Math.max(1, Number(manageUsersPageSize) || 50);
+  const totalPages = Math.max(1, Math.ceil(filteredCount / pageSize));
+  manageUsersCurrentPage = Math.max(1, Math.min(manageUsersCurrentPage, totalPages));
+
+  if (filteredCount <= pageSize && pageSize === 50) return;
+
+  const prevBtn = document.createElement("button");
+  prevBtn.type = "button";
+  prevBtn.className = "blue-button";
+  prevBtn.textContent = "Prev";
+  prevBtn.disabled = manageUsersCurrentPage <= 1;
+  prevBtn.addEventListener("click", () => {
+    if (manageUsersCurrentPage <= 1) return;
+    manageUsersCurrentPage -= 1;
+    renderUsers(totalRows);
+  });
+
+  const pageInfo = document.createElement("span");
+  pageInfo.className = "manage-users-page-info";
+  pageInfo.textContent = `Page ${manageUsersCurrentPage} of ${totalPages}`;
+
+  const nextBtn = document.createElement("button");
+  nextBtn.type = "button";
+  nextBtn.className = "blue-button";
+  nextBtn.textContent = "Next";
+  nextBtn.disabled = manageUsersCurrentPage >= totalPages;
+  nextBtn.addEventListener("click", () => {
+    if (manageUsersCurrentPage >= totalPages) return;
+    manageUsersCurrentPage += 1;
+    renderUsers(totalRows);
+  });
+
+  const pageSizeSelect = document.createElement("select");
+  pageSizeSelect.className = "blue-button";
+  [25, 50, 100].forEach((size) => {
+    const option = document.createElement("option");
+    option.value = String(size);
+    option.textContent = `${size} per page`;
+    if (size === pageSize) option.selected = true;
+    pageSizeSelect.appendChild(option);
+  });
+  pageSizeSelect.addEventListener("change", () => {
+    const nextSize = Number(pageSizeSelect.value);
+    manageUsersPageSize = Number.isFinite(nextSize) && nextSize > 0 ? nextSize : 50;
+    manageUsersCurrentPage = 1;
+    renderUsers(totalRows);
+  });
+
+  controls.appendChild(prevBtn);
+  controls.appendChild(pageInfo);
+  controls.appendChild(nextBtn);
+  controls.appendChild(pageSizeSelect);
+}
+
 function updateSortHeaderState() {
   const headers = document.querySelectorAll("#userHeaderTable th[data-sort]");
   headers.forEach(header => {
@@ -443,6 +507,7 @@ function handleSortHeaderInteraction(field) {
     sortDirection = "asc";
   }
   updateSortHeaderState();
+  manageUsersCurrentPage = 1;
   renderUsers();
 }
 
@@ -835,6 +900,46 @@ function createCellForColumn(columnKey, user) {
   return createCell("-");
 }
 
+function isMissingRpcError(error) {
+  const message = String(error?.message || error?.details || "").toLowerCase();
+  return error?.code === "PGRST202" ||
+    message.includes("could not find the function") ||
+    message.includes("schema cache");
+}
+
+async function setUserActiveStatus(user, nextActiveFlag, nextDeactivatedAt) {
+  const manageResult = await supabase.rpc("set_manage_user_active", {
+    p_studio_id: user.studio_id,
+    p_user_id: user.id,
+    p_active: nextActiveFlag
+  });
+  if (!manageResult.error) return manageResult;
+  if (!isMissingRpcError(manageResult.error)) return manageResult;
+
+  console.warn("[ManageUsers] set_manage_user_active unavailable; trying compatibility fallbacks", manageResult.error);
+
+  const familyResult = await supabase.rpc("set_family_student_active", {
+    p_student_id: user.id,
+    p_studio_id: user.studio_id,
+    p_active: nextActiveFlag
+  });
+  if (!familyResult.error) return familyResult;
+  if (!isMissingRpcError(familyResult.error) && familyResult.error?.code !== "42501") return familyResult;
+
+  const directResult = await supabase
+    .from("users")
+    .update({ deactivated_at: nextDeactivatedAt, active: nextActiveFlag })
+    .eq("id", user.id)
+    .eq("studio_id", user.studio_id)
+    .select("id, active, deactivated_at");
+  if (!directResult.error) return directResult;
+
+  return {
+    data: null,
+    error: directResult.error || familyResult.error || manageResult.error
+  };
+}
+
 function setGlobalEditingState(isEditing) {
   const table = document.getElementById("userHeaderTable");
   if (!table) return;
@@ -973,13 +1078,12 @@ async function toggleUserActive(user, button) {
   const nextActiveFlag = !currentlyActive;
 
   if (button) button.disabled = true;
-  const { data, error } = await supabase.rpc("set_manage_user_active", {
-    p_studio_id: user.studio_id,
-    p_user_id: user.id,
-    p_active: nextActiveFlag
-  });
+  const { data, error } = await setUserActiveStatus(user, nextActiveFlag, nextDeactivatedAt);
   if (error) {
-    renderStatus("Failed to update active status: " + error.message, true);
+    const migrationHint = isMissingRpcError(error)
+      ? " Apply the latest Supabase migration, then retry."
+      : "";
+    renderStatus("Failed to update active status: " + error.message + migrationHint, true);
     if (button) button.disabled = false;
     return;
   }
@@ -1038,6 +1142,12 @@ function renderUsers(totalRows = null) {
   const filteredUsers = applyFilters(allUsers);
   const filtered = getSortedUsers(filteredUsers);
   const total = Number.isFinite(totalRows) ? totalRows : allUsers.length;
+  const pageSize = Math.max(1, Number(manageUsersPageSize) || 50);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  manageUsersCurrentPage = Math.max(1, Math.min(manageUsersCurrentPage, totalPages));
+  const startIndex = (manageUsersCurrentPage - 1) * pageSize;
+  const pageUsers = filtered.slice(startIndex, startIndex + pageSize);
+
   if (!filtered.length) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
@@ -1046,11 +1156,12 @@ function renderUsers(totalRows = null) {
     td.style.textAlign = "center";
     tr.appendChild(td);
     tbody.appendChild(tr);
-    setLoadedCount(`0 shown • ${total} total`);
+    setLoadedCount(`0 shown - ${total} total`);
+    renderManageUsersPagination(0, total);
     return;
   }
 
-  filtered.forEach(user => {
+  pageUsers.forEach(user => {
     const tr = document.createElement("tr");
     tr.dataset.userId = String(user.id || "");
     tr.classList.toggle("is-inactive", Boolean(user.deactivated_at));
@@ -1062,9 +1173,11 @@ function renderUsers(totalRows = null) {
     tbody.appendChild(tr);
   });
 
-  setLoadedCount(`${filtered.length} shown • ${total} total`);
+  const displayStart = startIndex + 1;
+  const displayEnd = startIndex + pageUsers.length;
+  setLoadedCount(`Showing ${displayStart}-${displayEnd} of ${filtered.length} - ${total} total`);
+  renderManageUsersPagination(filtered.length, total);
 }
-
 async function resolveStudioId() {
   const access = await getAccessFlags();
   if (access?.studio_id) return access.studio_id;
@@ -1235,6 +1348,7 @@ async function initManageUsersPanel() {
     searchHandlerBound = true;
     searchInput.addEventListener("input", event => {
       searchTerm = event.target.value || "";
+      manageUsersCurrentPage = 1;
       renderUsers();
     });
   }
