@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient.js";
-import { getViewerContext } from './utils.js';
+import { createLevelCompletedNotification, getViewerContext } from './utils.js';
 import { ensureStudioContextAndRoute } from "./studio-routing.js";
 
 const BADGE_DEMO_SRC = "images/badges/demo.png";
@@ -216,82 +216,21 @@ function showToast(message) {
 async function createLevelUpNotifications({ studioId, studentUserId, studentName, level }) {
   if (!studentUserId || !level) return;
   try {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const viewerId = sessionData?.session?.user?.id || null;
-
-    const { data: members, error: memberErr } = await supabase
-      .from("studio_members")
-      .select("user_id, roles")
-      .eq("studio_id", studioId)
-      .or("roles.cs.{admin},roles.cs.{teacher}");
-
-    if (memberErr) console.warn("[My Points] staff lookup failed", memberErr);
-
-    const staffIds = Array.from(new Set((members || []).map(m => m.user_id).filter(Boolean)));
-    const recipients = [studentUserId, ...staffIds];
-    const message = `${studentName} reached Level ${level}.`;
-    const base = {
-      title: "Level Up!",
-      message,
-      type: "level_up",
-      studio_id: studioId || null,
-      created_by: viewerId
-    };
-
-    const extendedPayload = recipients.map(userId => ({
-      userId,
-      ...base
-    }));
-
-    let insertError = null;
-    console.log("[NotifDiag][my-points.js][createLevelUpNotifications] before insert", {
-      source: "my-points.js::createLevelUpNotifications",
-      payload: extendedPayload,
-      resolved_userId: extendedPayload.map((row) => row.userId),
-      resolved_studio_id: studioId || null,
-      resolved_created_by: viewerId || null,
-      resolved_related_log_id: extendedPayload.map((row) => row.related_log_id ?? null)
+    const enteredLevel = Number(level || 0);
+    const completedLevel = enteredLevel - 1;
+    if (!Number.isFinite(completedLevel) || completedLevel <= 0) return;
+    const result = await createLevelCompletedNotification({
+      studioId,
+      studentUserId,
+      studentName,
+      completedLevelStart: completedLevel,
+      completedLevelEnd: completedLevel
     });
-    const { data: extData, error: extErr } = await supabase.from("notifications").insert(extendedPayload);
-    console.log("[NotifDiag][my-points.js][createLevelUpNotifications] after insert", {
-      source: "my-points.js::createLevelUpNotifications",
-      data: extData ?? null,
-      error: extErr ?? null,
-      summary: extErr ? "insert_error" : "insert_ok"
-    });
-    if (extErr) {
-      insertError = extErr;
-      const msg = String(extErr.message || "");
-      if (msg.toLowerCase().includes("column") || msg.toLowerCase().includes("does not exist")) {
-        const fallbackPayload = recipients.map(userId => ({
-          userId,
-          message
-        }));
-        console.log("[NotifDiag][my-points.js][createLevelUpNotifications] before fallback insert", {
-          source: "my-points.js::createLevelUpNotifications:fallback",
-          payload: fallbackPayload,
-          resolved_userId: fallbackPayload.map((row) => row.userId),
-          resolved_studio_id: null,
-          resolved_created_by: null,
-          resolved_related_log_id: fallbackPayload.map(() => null)
-        });
-        const { data: fallbackData, error: fallbackErr } = await supabase.from("notifications").insert(fallbackPayload);
-        console.log("[NotifDiag][my-points.js][createLevelUpNotifications] after fallback insert", {
-          source: "my-points.js::createLevelUpNotifications:fallback",
-          data: fallbackData ?? null,
-          error: fallbackErr ?? null,
-          summary: fallbackErr ? "fallback_insert_error" : "fallback_insert_ok"
-        });
-        if (fallbackErr) insertError = fallbackErr;
-        else insertError = null;
-      }
-    }
-
-    if (insertError) {
-      console.warn("[My Points] level-up notification insert failed", insertError);
+    if (result?.ok === false) {
+      console.warn("[My Points] level-completed notification insert failed", result.error || result);
     }
   } catch (err) {
-    console.warn("[My Points] level-up notifications error", err);
+    console.warn("[My Points] level-completed notifications error", err);
   }
 }
 
