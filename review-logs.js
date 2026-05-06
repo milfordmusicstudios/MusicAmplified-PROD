@@ -1923,7 +1923,11 @@ function createNotificationAdminControls(statusText = "") {
         result: data,
         created
       });
-      await loadNotifications(`Created ${created} notification${created === 1 ? "" : "s"}.`, { resetPage: true });
+      const updatedTimestamps = Number(data?.updatedTimestamps ?? data?.updated_timestamps ?? data?.updatedNotificationTimestamps ?? 0);
+      await loadNotifications(
+        `Created ${created} notification${created === 1 ? "" : "s"}; updated ${updatedTimestamps} timestamp${updatedTimestamps === 1 ? "" : "s"}.`,
+        { resetPage: true }
+      );
       await updateNotificationsButtonState();
       window.dispatchEvent(new Event("aa:notification-state-changed"));
     } catch (error) {
