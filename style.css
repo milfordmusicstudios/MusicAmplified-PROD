@@ -4426,6 +4426,19 @@ body.review-logs-page .notification-admin-status {
   font-weight: 800;
 }
 
+body.review-logs-page .recognition-export-checks {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+body.review-logs-page .recognition-export-checks label {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  font-weight: 800;
+}
+
 body.review-logs-page .notification-count-summary {
   color: #0B4F8A;
   font-size: 14px;

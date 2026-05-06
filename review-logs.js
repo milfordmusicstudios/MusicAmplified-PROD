@@ -1244,6 +1244,24 @@ const notificationFilterElements = {
   apply: document.getElementById("applyNotificationFiltersBtn"),
   reset: document.getElementById("resetNotificationFiltersBtn")
 };
+const recognitionExportElements = {
+  modal: document.getElementById("recognitionExportModal"),
+  close: document.getElementById("recognitionExportClose"),
+  cancel: document.getElementById("cancelRecognitionExportBtn"),
+  run: document.getElementById("runRecognitionExportBtn"),
+  format: document.getElementById("recognitionExportFormat"),
+  scope: document.getElementById("recognitionExportScope"),
+  dateRange: document.getElementById("recognitionExportDateRange"),
+  dateFrom: document.getElementById("recognitionExportDateFrom"),
+  dateTo: document.getElementById("recognitionExportDateTo"),
+  sort: document.getElementById("recognitionExportSort"),
+  includeDates: document.getElementById("recognitionExportIncludeDates"),
+  includeTeacher: document.getElementById("recognitionExportIncludeTeacher"),
+  includeInstrument: document.getElementById("recognitionExportIncludeInstrument"),
+  includePoints: document.getElementById("recognitionExportIncludePoints"),
+  onlyUnrecognized: document.getElementById("recognitionExportOnlyUnrecognized"),
+  includeInactive: document.getElementById("recognitionExportIncludeInactive")
+};
 let notificationFilters = {
   studentIds: [],
   dateFrom: "",
@@ -1256,6 +1274,8 @@ let notificationFilters = {
 let notificationFilterRoster = [];
 const notificationSelectedStudentIds = new Set();
 let latestRecognitionNotificationRows = [];
+let recognitionExportRoster = [];
+let recognitionExportRosterLoaded = false;
 
 const isLevelUpNotification = (row) => {
   const type = String(row?.type || "").toLowerCase();
@@ -1347,80 +1367,179 @@ const shouldHideRecognitionNotification = (row) =>
   hasLegacyLevelNotificationLanguage(row) ||
   hasInvalidLevelNotificationTimestamp(row);
 
-const getHighestCompletedLevelsForRecognition = (notifications = []) => {
-  const byStudent = new Map();
-  (Array.isArray(notifications) ? notifications : []).forEach((row) => {
-    if (!row || shouldHideRecognitionNotification(row)) return;
-    if (getCanonicalNotificationType(row) !== "level_completed") return;
-    const level = getNotificationLevelNumber(row);
-    if (!Number.isFinite(level) || level <= 0) return;
-    const student = getNotificationStudentName(row).trim();
-    if (!student || student.toLowerCase() === "milford music") return;
-    const createdAt = new Date(row?.created_at || "");
-    if (Number.isNaN(createdAt.getTime()) || createdAt.getFullYear() < 2024) return;
-    const key = student.toLowerCase();
-    const existing = byStudent.get(key);
-    if (
-      !existing ||
-      level > existing.level ||
-      (level === existing.level && createdAt.getTime() < existing.createdAt.getTime())
-    ) {
-      byStudent.set(key, { student, level, createdAt });
-    }
-  });
-  return Array.from(byStudent.values()).sort((a, b) =>
-    a.student.localeCompare(b.student, undefined, { sensitivity: "base" })
-  );
-};
-
-window.getHighestCompletedLevelsForRecognition = getHighestCompletedLevelsForRecognition;
+const normalizeRecognitionStudentName = (name) =>
+  String(name || "").trim().replace(/\s+/g, " ").toLowerCase();
 
 const formatRecognitionExportDate = (date) => {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
   return date.toLocaleDateString("en-US");
 };
 
+const getRecognitionExportRosterMatch = (studentName) => {
+  const normalized = normalizeRecognitionStudentName(studentName);
+  if (!normalized) return null;
+  return recognitionExportRoster.find((row) => normalizeRecognitionStudentName(getQuickAddStudentName(row)) === normalized) || null;
+};
+
+const isRecognitionRosterInactive = (studentName) => {
+  const match = getRecognitionExportRosterMatch(studentName);
+  if (!match) return false;
+  return match.active === false || Boolean(match.deactivated_at);
+};
+
+const getRecognitionTeacherText = (studentName) => {
+  const match = getRecognitionExportRosterMatch(studentName);
+  if (!match || !Array.isArray(match.teacherNames)) return "";
+  return match.teacherNames.filter(Boolean).join(", ");
+};
+
+const getRecognitionInstrumentText = (studentName) => {
+  const match = getRecognitionExportRosterMatch(studentName);
+  const value = match?.instrument || match?.instrumentName || match?.primaryInstrument || match?.primary_instrument || "";
+  return Array.isArray(value) ? value.filter(Boolean).join(", ") : String(value || "");
+};
+
+const getRecognitionPointsText = (studentName) => {
+  const match = getRecognitionExportRosterMatch(studentName);
+  const value = match?.points ?? match?.totalPoints ?? match?.total_points ?? "";
+  return value === null || value === undefined ? "" : String(value);
+};
+
+const getValidRecognitionNotificationRows = (notifications = [], options = {}) =>
+  (Array.isArray(notifications) ? notifications : [])
+    .filter((row) => {
+      if (!row || shouldHideRecognitionNotification(row)) return false;
+      if (getCanonicalNotificationType(row) !== "level_completed") return false;
+      const student = getNotificationStudentName(row).trim();
+      if (!student || student.toLowerCase() === "milford music") return false;
+      if (!options.includeInactive && isRecognitionRosterInactive(student)) return false;
+      if (options.onlyUnrecognized && isRecognitionGiven(row)) return false;
+      const createdAt = new Date(row?.created_at || "");
+      if (Number.isNaN(createdAt.getTime()) || createdAt.getFullYear() < 2024) return false;
+      const dateOnly = getDateOnlyString(row?.created_at);
+      if (options.dateFrom && (!dateOnly || dateOnly < options.dateFrom)) return false;
+      if (options.dateTo && (!dateOnly || dateOnly > options.dateTo)) return false;
+      const level = getNotificationLevelNumber(row);
+      return Number.isFinite(level) && level > 0;
+    });
+
+const toRecognitionExportRow = (row) => {
+  const student = getNotificationStudentName(row).trim();
+  const createdAt = new Date(row?.created_at || "");
+  return {
+    source: row,
+    student,
+    level: getNotificationLevelNumber(row),
+    createdAt,
+    recognitionGiven: isRecognitionGiven(row),
+    recognitionDate: getRecognitionRecordedAtValue(row) ? new Date(getRecognitionRecordedAtValue(row)) : null
+  };
+};
+
+const sortRecognitionRows = (rows, sort) => [...rows].sort((a, b) => {
+  if (sort === "student_az") return a.student.localeCompare(b.student, undefined, { sensitivity: "base" });
+  if (sort === "date_desc") return b.createdAt.getTime() - a.createdAt.getTime();
+  if (sort === "date_asc") return a.createdAt.getTime() - b.createdAt.getTime();
+  return (b.level - a.level) ||
+    a.student.localeCompare(b.student, undefined, { sensitivity: "base" });
+});
+
+const getRecognitionScopeSubtitle = (scope) => {
+  if (scope === "recent") return "Most Recent Level Notifications";
+  if (scope === "history") return "Entire Level Notification History";
+  if (scope === "custom") return "Custom Date Range";
+  return "Highest Completed Level Per Student";
+};
+
+const getRecognitionCsvFilename = (scope) => {
+  if (scope === "history") return "recognition-history.csv";
+  if (scope === "custom") return "recognition-custom-date-range.csv";
+  if (scope === "recent") return "recognition-recent-levels.csv";
+  return "recognition-highest-levels.csv";
+};
+
+const getHighestCompletedLevelsForRecognition = (notifications = [], options = {}) => {
+  const byStudent = new Map();
+  getValidRecognitionNotificationRows(notifications, options).forEach((row) => {
+    const exportRow = toRecognitionExportRow(row);
+    const key = normalizeRecognitionStudentName(exportRow.student);
+    const existing = byStudent.get(key);
+    if (
+      !existing ||
+      exportRow.level > existing.level ||
+      (exportRow.level === existing.level && exportRow.createdAt.getTime() < existing.createdAt.getTime())
+    ) {
+      byStudent.set(key, exportRow);
+    }
+  });
+  return sortRecognitionRows(Array.from(byStudent.values()), options.sort || "level_desc");
+};
+
+window.getHighestCompletedLevelsForRecognition = getHighestCompletedLevelsForRecognition;
+
 const csvEscape = (value) => {
   const text = String(value ?? "");
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
-const getCurrentRecognitionSummary = async () => {
+const getCurrentRecognitionNotificationRows = async () => {
   if (latestRecognitionNotificationRows.length) {
-    return getHighestCompletedLevelsForRecognition(latestRecognitionNotificationRows);
+    return latestRecognitionNotificationRows;
   }
   const { data, error } = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
   if (error) throw error;
-  const deduped = sortNotificationsNewestFirst(mergeNotificationRows([data || []], NOTIFICATION_FETCH_ADMIN_CAP));
-  return getHighestCompletedLevelsForRecognition(deduped);
+  return sortNotificationsNewestFirst(mergeNotificationRows([data || []], NOTIFICATION_FETCH_ADMIN_CAP));
 };
 
-const downloadRecognitionCsv = async (statusEl) => {
-  try {
-    const summary = await getCurrentRecognitionSummary();
-    const rows = [
-      ["Student", "Highest Completed Level", "Completion Date"],
-      ...summary.map((row) => [
-        row.student,
-        row.level,
-        formatRecognitionExportDate(row.createdAt)
-      ])
-    ];
-    const csv = rows.map((row) => row.map(csvEscape).join(",")).join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "recital-recognition-levels.csv";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    if (statusEl) statusEl.textContent = `Exported ${summary.length} student${summary.length === 1 ? "" : "s"}.`;
-  } catch (error) {
-    console.error("[ReviewLogs] recognition CSV export failed", error);
-    if (statusEl) statusEl.textContent = "CSV export failed: " + (error?.message || "Unknown error");
+const getRecognitionExportRows = async (options = {}) => {
+  await loadRecognitionExportRoster();
+  const notifications = await getCurrentRecognitionNotificationRows();
+  const scopedOptions = {
+    includeInactive: Boolean(options.includeInactive),
+    onlyUnrecognized: Boolean(options.onlyUnrecognized),
+    dateFrom: options.scope === "custom" ? options.dateFrom : "",
+    dateTo: options.scope === "custom" ? options.dateTo : "",
+    sort: options.sort || "level_desc"
+  };
+  if (options.scope === "highest") {
+    return getHighestCompletedLevelsForRecognition(notifications, scopedOptions);
   }
+  const rows = getValidRecognitionNotificationRows(notifications, scopedOptions).map(toRecognitionExportRow);
+  return sortRecognitionRows(rows, options.sort || (options.scope === "recent" ? "date_desc" : "level_desc"));
+};
+
+const getRecognitionExportColumns = (options, rows) => {
+  const columns = [
+    { key: "student", label: "Student", value: (row) => row.student },
+    { key: "level", label: "Level Completed", value: (row) => row.level },
+    ...(options.includeDates === false ? [] : [{ key: "completionDate", label: "Completion Date", value: (row) => formatRecognitionExportDate(row.createdAt) }]),
+    { key: "recognitionGiven", label: "Recognition Given", value: (row) => row.recognitionGiven ? "Yes" : "No" },
+    ...(rows.some((row) => row.recognitionGiven && row.recognitionDate instanceof Date && !Number.isNaN(row.recognitionDate.getTime()))
+      ? [{ key: "recognitionDate", label: "Recognition Date", value: (row) => formatRecognitionExportDate(row.recognitionDate) }]
+      : [])
+  ];
+  if (options.includeTeacher) columns.push({ key: "teacher", label: "Teacher", value: (row) => getRecognitionTeacherText(row.student) });
+  if (options.includeInstrument) columns.push({ key: "instrument", label: "Instrument", value: (row) => getRecognitionInstrumentText(row.student) });
+  if (options.includePoints) columns.push({ key: "points", label: "Total Points", value: (row) => getRecognitionPointsText(row.student) });
+  return columns;
+};
+
+const downloadRecognitionCsv = (rows, columns, filename, statusEl) => {
+  const csvRows = [
+    columns.map((column) => column.label),
+    ...rows.map((row) => columns.map((column) => column.value(row)))
+  ];
+  const csv = csvRows.map((row) => row.map(csvEscape).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  if (statusEl) statusEl.textContent = `Exported ${rows.length} student${rows.length === 1 ? "" : "s"}.`;
 };
 
 const htmlEscape = (value) => String(value ?? "")
@@ -1429,25 +1548,21 @@ const htmlEscape = (value) => String(value ?? "")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
 
-const printRecognitionSummary = async (statusEl) => {
-  try {
-    const summary = await getCurrentRecognitionSummary();
-    const generatedAt = new Date().toLocaleDateString("en-US");
-    const rowsHtml = summary.length
-      ? summary.map((row) => `
-          <tr>
-            <td>${htmlEscape(row.student)}</td>
-            <td>${htmlEscape(row.level)}</td>
-            <td>${htmlEscape(formatRecognitionExportDate(row.createdAt))}</td>
-          </tr>
-        `).join("")
-      : '<tr><td colspan="3">No level-completion recognitions found.</td></tr>';
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) {
-      if (statusEl) statusEl.textContent = "Print popup was blocked.";
-      return;
-    }
-    printWindow.document.write(`<!doctype html>
+const printRecognitionSummary = (rows, columns, subtitle, statusEl) => {
+  const generatedAt = new Date().toLocaleDateString("en-US");
+  const rowsHtml = rows.length
+    ? rows.map((row) => `
+        <tr>
+          ${columns.map((column) => `<td>${htmlEscape(column.value(row))}</td>`).join("")}
+        </tr>
+      `).join("")
+    : `<tr><td colspan="${columns.length}">No level-completion recognitions found.</td></tr>`;
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    if (statusEl) statusEl.textContent = "Print popup was blocked.";
+    return;
+  }
+  printWindow.document.write(`<!doctype html>
       <html>
       <head>
         <meta charset="utf-8">
@@ -1465,14 +1580,12 @@ const printRecognitionSummary = async (statusEl) => {
       </head>
       <body>
         <h1>Recital Recognition List</h1>
-        <h2>Highest Completed Level Per Student</h2>
+        <h2>${htmlEscape(subtitle)}</h2>
         <p class="generated">Generated ${htmlEscape(generatedAt)}</p>
         <table>
           <thead>
             <tr>
-              <th>Student</th>
-              <th>Highest Completed Level</th>
-              <th>Completion Date</th>
+              ${columns.map((column) => `<th>${htmlEscape(column.label)}</th>`).join("")}
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
@@ -1484,12 +1597,8 @@ const printRecognitionSummary = async (statusEl) => {
         <\/script>
       </body>
       </html>`);
-    printWindow.document.close();
-    if (statusEl) statusEl.textContent = `Prepared ${summary.length} student${summary.length === 1 ? "" : "s"} for print.`;
-  } catch (error) {
-    console.error("[ReviewLogs] recognition print export failed", error);
-    if (statusEl) statusEl.textContent = "Print export failed: " + (error?.message || "Unknown error");
-  }
+  printWindow.document.close();
+  if (statusEl) statusEl.textContent = `Prepared ${rows.length} student${rows.length === 1 ? "" : "s"} for print.`;
 };
 const getNotificationDedupeKey = (row) => {
   const type = getCanonicalNotificationType(row);
@@ -1594,6 +1703,28 @@ const updateRecognitionState = async (row, recognitionGiven, recognitionNote) =>
   const id = String(row?.id || "").trim();
   if (!id) return;
   const nowIso = new Date().toISOString();
+  try {
+    const { data, error } = await supabase.rpc("set_notification_recognition", {
+      p_notification_id: Number(id),
+      p_recognition_given: Boolean(recognitionGiven),
+      p_recognition_note: String(recognitionNote || "").trim() || null
+    });
+    if (!error) {
+      const updatedRow = Array.isArray(data) ? data[0] : data;
+      if (updatedRow) {
+        Object.assign(row, {
+          recognition_given: updatedRow.recognition_given,
+          recognition_given_at: updatedRow.recognition_given_at,
+          recognition_given_by: updatedRow.recognition_given_by,
+          recognition_note: updatedRow.recognition_note
+        });
+      }
+      return;
+    }
+    console.warn("[ReviewLogs] recognition RPC failed; trying direct update", error);
+  } catch (error) {
+    console.warn("[ReviewLogs] recognition RPC failed; trying direct update", error);
+  }
   const snakePayload = {
     recognition_given: Boolean(recognitionGiven),
     recognition_given_at: recognitionGiven ? nowIso : null,
@@ -2006,6 +2137,41 @@ async function loadNotificationFilterStudents() {
   renderNotificationPickerDropdown();
 }
 
+async function loadRecognitionExportRoster() {
+  if (recognitionExportRosterLoaded) return recognitionExportRoster;
+  recognitionExportRosterLoaded = true;
+  try {
+    const { data: students, error: studentsError } = await supabase
+      .from("users")
+      .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at, points")
+      .eq("studio_id", viewerContext.studioId);
+    if (studentsError) throw studentsError;
+
+    const { data: staffRows } = await supabase
+      .from("users")
+      .select("id, firstName, lastName, email, roles")
+      .eq("studio_id", viewerContext.studioId);
+    const staffNameById = new Map((staffRows || []).map((row) => [String(row.id), getQuickAddStudentName(row)]));
+
+    recognitionExportRoster = (students || [])
+      .filter((row) => {
+        const roles = Array.isArray(row.roles) ? row.roles : [row.roles];
+        return roles.map((role) => String(role || "").toLowerCase()).includes("student");
+      })
+      .map((row) => ({
+        ...row,
+        teacherNames: Array.isArray(row.teacherIds)
+          ? row.teacherIds.map((id) => staffNameById.get(String(id))).filter(Boolean)
+          : []
+      }));
+  } catch (error) {
+    recognitionExportRosterLoaded = false;
+    recognitionExportRoster = [];
+    console.warn("[ReviewLogs] recognition export roster failed", error);
+  }
+  return recognitionExportRoster;
+}
+
 function syncNotificationFilterModalFields() {
   notificationSelectedStudentIds.clear();
   notificationFilters.studentIds.forEach((id) => notificationSelectedStudentIds.add(String(id)));
@@ -2058,6 +2224,77 @@ function resetNotificationFilters() {
   syncNotificationFilterModalFields();
 }
 
+function syncRecognitionExportDateRange() {
+  const showRange = recognitionExportElements.scope?.value === "custom";
+  if (recognitionExportElements.dateRange) {
+    recognitionExportElements.dateRange.style.display = showRange ? "" : "none";
+  }
+}
+
+function resetRecognitionExportOptions() {
+  if (recognitionExportElements.format) recognitionExportElements.format.value = "print";
+  if (recognitionExportElements.scope) recognitionExportElements.scope.value = "highest";
+  if (recognitionExportElements.sort) recognitionExportElements.sort.value = "level_desc";
+  if (recognitionExportElements.dateFrom) recognitionExportElements.dateFrom.value = "";
+  if (recognitionExportElements.dateTo) recognitionExportElements.dateTo.value = "";
+  if (recognitionExportElements.includeDates) recognitionExportElements.includeDates.checked = true;
+  if (recognitionExportElements.includeTeacher) recognitionExportElements.includeTeacher.checked = false;
+  if (recognitionExportElements.includeInstrument) recognitionExportElements.includeInstrument.checked = false;
+  if (recognitionExportElements.includePoints) recognitionExportElements.includePoints.checked = false;
+  if (recognitionExportElements.onlyUnrecognized) recognitionExportElements.onlyUnrecognized.checked = false;
+  if (recognitionExportElements.includeInactive) recognitionExportElements.includeInactive.checked = false;
+  syncRecognitionExportDateRange();
+}
+
+function openRecognitionExportModal() {
+  resetRecognitionExportOptions();
+  if (recognitionExportElements.modal) recognitionExportElements.modal.style.display = "flex";
+}
+
+function closeRecognitionExportModal() {
+  if (recognitionExportElements.modal) recognitionExportElements.modal.style.display = "none";
+}
+
+function collectRecognitionExportOptions() {
+  return {
+    format: recognitionExportElements.format?.value || "print",
+    scope: recognitionExportElements.scope?.value || "highest",
+    sort: recognitionExportElements.sort?.value || "level_desc",
+    dateFrom: recognitionExportElements.dateFrom?.value || "",
+    dateTo: recognitionExportElements.dateTo?.value || "",
+    includeDates: recognitionExportElements.includeDates?.checked !== false,
+    includeTeacher: Boolean(recognitionExportElements.includeTeacher?.checked),
+    includeInstrument: Boolean(recognitionExportElements.includeInstrument?.checked),
+    includePoints: Boolean(recognitionExportElements.includePoints?.checked),
+    onlyUnrecognized: Boolean(recognitionExportElements.onlyUnrecognized?.checked),
+    includeInactive: Boolean(recognitionExportElements.includeInactive?.checked)
+  };
+}
+
+async function runRecognitionExport() {
+  const button = recognitionExportElements.run;
+  if (button) button.disabled = true;
+  try {
+    const options = collectRecognitionExportOptions();
+    const rows = await getRecognitionExportRows(options);
+    const columns = getRecognitionExportColumns(options, rows);
+    const subtitle = getRecognitionScopeSubtitle(options.scope);
+    const status = document.querySelector(".notification-admin-status");
+    closeRecognitionExportModal();
+    if (options.format === "csv") {
+      downloadRecognitionCsv(rows, columns, getRecognitionCsvFilename(options.scope), status);
+    } else {
+      printRecognitionSummary(rows, columns, subtitle, status);
+    }
+  } catch (error) {
+    console.error("[ReviewLogs] recognition export failed", error);
+    const status = document.querySelector(".notification-admin-status");
+    if (status) status.textContent = "Export failed: " + (error?.message || "Unknown error");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 if (notificationFilterElements.close) {
   notificationFilterElements.close.addEventListener("click", closeNotificationFilterModal);
 }
@@ -2082,6 +2319,25 @@ if (notificationFilterElements.reset) {
     resetNotificationFilters();
     closeNotificationFilterModal();
     await loadNotifications("", { resetPage: true });
+  });
+}
+if (recognitionExportElements.close) {
+  recognitionExportElements.close.addEventListener("click", closeRecognitionExportModal);
+}
+if (recognitionExportElements.cancel) {
+  recognitionExportElements.cancel.addEventListener("click", closeRecognitionExportModal);
+}
+if (recognitionExportElements.modal) {
+  recognitionExportElements.modal.addEventListener("click", (event) => {
+    if (event.target === recognitionExportElements.modal) closeRecognitionExportModal();
+  });
+}
+if (recognitionExportElements.scope) {
+  recognitionExportElements.scope.addEventListener("change", syncRecognitionExportDateRange);
+}
+if (recognitionExportElements.run) {
+  recognitionExportElements.run.addEventListener("click", () => {
+    void runRecognitionExport();
   });
 }
 document.addEventListener("click", (event) => {
@@ -2127,25 +2383,15 @@ function createNotificationAdminControls(statusText = "") {
   });
   controls.appendChild(filterButton);
 
-  const csvButton = document.createElement("button");
-  csvButton.id = "exportRecognitionCsvBtn";
-  csvButton.className = "blue-button";
-  csvButton.type = "button";
-  csvButton.textContent = "Export Recognition CSV";
-  csvButton.addEventListener("click", () => {
-    void downloadRecognitionCsv(status);
+  const exportButton = document.createElement("button");
+  exportButton.id = "openRecognitionExportBtn";
+  exportButton.className = "blue-button";
+  exportButton.type = "button";
+  exportButton.textContent = "Export / Print";
+  exportButton.addEventListener("click", () => {
+    openRecognitionExportModal();
   });
-  controls.appendChild(csvButton);
-
-  const printButton = document.createElement("button");
-  printButton.id = "printRecognitionListBtn";
-  printButton.className = "blue-button";
-  printButton.type = "button";
-  printButton.textContent = "Print / Save PDF";
-  printButton.addEventListener("click", () => {
-    void printRecognitionSummary(status);
-  });
-  controls.appendChild(printButton);
+  controls.appendChild(exportButton);
 
   if (!viewerContext?.isAdmin) {
     controls.appendChild(status);
