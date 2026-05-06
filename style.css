@@ -4437,6 +4437,18 @@ body.review-logs-page .recognition-export-checks label {
   display: flex;
   gap: 8px;
   font-weight: 800;
+  line-height: 1.2;
+}
+
+body.review-logs-page .filter-logs-modal-body .recognition-export-checks input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  width: auto;
+}
+
+body.review-logs-page .recognition-export-checks label {
+  justify-content: flex-start;
 }
 
 body.review-logs-page .notification-count-summary {
@@ -9647,4 +9659,69 @@ body.manage-users .tag-picker-custom-btn,
   body.student-home-page .home-welcome {
     font-size: 1.04rem;
   }
+}
+
+/* Final shared button finish: keep app-wide blue buttons dimensional and readable. */
+.blue-button:not(select),
+button.blue-button:not(select),
+a.blue-button:not(select) {
+  background: linear-gradient(180deg, #58c4fb 0%, #2fa7e8 100%) !important;
+  border: 1px solid rgba(7, 91, 151, 0.3) !important;
+  border-bottom-color: rgba(7, 77, 130, 0.5) !important;
+  box-shadow:
+    0 8px 16px rgba(15, 91, 145, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    inset 0 -2px 0 rgba(0, 77, 132, 0.12) !important;
+  color: #ffffff !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.15 !important;
+  min-height: 42px;
+  padding-left: max(16px, 0.85em) !important;
+  padding-right: max(16px, 0.85em) !important;
+  text-shadow: 0 1px 0 rgba(0, 56, 105, 0.18);
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    filter 140ms ease;
+}
+
+.blue-button:not(select):hover,
+button.blue-button:not(select):hover,
+a.blue-button:not(select):hover {
+  box-shadow:
+    0 10px 20px rgba(15, 91, 145, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.44),
+    inset 0 -2px 0 rgba(0, 77, 132, 0.12) !important;
+  transform: translateY(-1px);
+}
+
+.blue-button:not(select):active,
+button.blue-button:not(select):active,
+a.blue-button:not(select):active {
+  box-shadow:
+    0 4px 10px rgba(15, 91, 145, 0.16),
+    inset 0 2px 4px rgba(0, 77, 132, 0.2) !important;
+  transform: translateY(1px);
+}
+
+.blue-button:not(select):disabled,
+button.blue-button:not(select):disabled {
+  box-shadow: none !important;
+  filter: grayscale(0.1);
+  opacity: 0.68;
+  transform: none;
+}
+
+select.blue-button {
+  background: linear-gradient(180deg, #58c4fb 0%, #2fa7e8 100%) !important;
+  border: 1px solid rgba(7, 91, 151, 0.32) !important;
+  box-shadow:
+    0 6px 12px rgba(15, 91, 145, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+  color: #ffffff !important;
+  font-weight: 800;
+  min-height: 40px;
+  padding-left: 14px !important;
 }
