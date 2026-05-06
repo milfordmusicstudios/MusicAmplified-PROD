@@ -3,8 +3,6 @@ import { ensureStudioContextAndRoute } from "./studio-routing.js";
 
 const OFFSETS = [0, 14, -14, 28, -28];
 const PAD_X = 28;
-const DEFAULT_AVATAR_SRC = "images/icons/default.png";
-const FALLBACK_AVATAR_SRC = "images/icons/default.png";
 const brokenAvatarUrls = new Set();
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -149,6 +147,7 @@ async function fetchStudentsByIds(ids, studioId) {
     .eq("studio_id", studioId)
     .eq("active", true)
     .is("deactivated_at", null)
+    .not("avatarUrl", "is", null)
     .or("showonleaderboard.is.true,showonleaderboard.is.null");
   if (error) {
     console.error("[Leaderboard] users fetch failed", error);
@@ -156,7 +155,7 @@ async function fetchStudentsByIds(ids, studioId) {
   }
   const students = (data || []).filter(u => {
     const roles = Array.isArray(u.roles) ? u.roles : [u.roles].filter(Boolean);
-    return roles.includes("student") && isActiveLeaderboardStudent(u);
+    return roles.includes("student") && isActiveLeaderboardStudent(u) && hasProfileAvatar(u);
   });
   console.log("[Leaderboard] active student filter", {
     totalStudentsFetched: ids.length,
@@ -176,9 +175,13 @@ function isActiveLeaderboardStudent(student) {
   return true;
 }
 
+function hasProfileAvatar(student) {
+  return Boolean(getValidAvatarUrl(student?.avatarUrl));
+}
+
 function buildTotalsFromUsers(students) {
   const totals = {};
-  (students || []).filter(isActiveLeaderboardStudent).forEach(student => {
+  (students || []).filter(student => isActiveLeaderboardStudent(student) && hasProfileAvatar(student)).forEach(student => {
     const id = student.id;
     totals[id] = Number(student.points || 0);
   });
@@ -189,7 +192,7 @@ function buildPlacements(students, totals, levels, activeStudentId) {
   const placements = [];
   const perLevelCount = {};
 
-  students.filter(isActiveLeaderboardStudent).forEach(student => {
+  students.filter(student => isActiveLeaderboardStudent(student) && hasProfileAvatar(student)).forEach(student => {
     const total = totals[student.id] || 0;
     const level = getLevelForPoints(total, levels);
     if (!level) return;
@@ -223,7 +226,8 @@ function renderAvatars(placements) {
     const avatar = document.createElement("img");
     avatar.className = `lb-avatar leaderboard-avatar${p.isSelf ? " is-self" : ""}`;
     const avatarUrl = getValidAvatarUrl(p.student.avatarUrl);
-    avatar.src = avatarUrl || DEFAULT_AVATAR_SRC;
+    if (!avatarUrl) return;
+    avatar.src = avatarUrl;
     const fullName = `${p.student.firstName ?? ""} ${p.student.lastName ?? ""}`.trim() || "Student";
     avatar.alt = fullName;
     avatar.title = `${fullName} — ${p.total} pts`;
@@ -264,7 +268,7 @@ function getValidAvatarUrl(value) {
 
 function handleBrokenAvatar(avatar, student, fullName) {
   const brokenUrl = avatar.dataset.avatarUrl || avatar.currentSrc || avatar.src || "";
-  if (brokenUrl && brokenUrl !== FALLBACK_AVATAR_SRC && !brokenAvatarUrls.has(brokenUrl)) {
+  if (brokenUrl && !brokenAvatarUrls.has(brokenUrl)) {
     brokenAvatarUrls.add(brokenUrl);
     console.warn("[Leaderboard] broken avatar URL", {
       studentId: student?.id || null,
@@ -272,9 +276,7 @@ function handleBrokenAvatar(avatar, student, fullName) {
       avatarUrl: brokenUrl
     });
   }
-  if (!avatar.src.endsWith(FALLBACK_AVATAR_SRC)) {
-    avatar.src = FALLBACK_AVATAR_SRC;
-  }
+  avatar.remove();
 }
 
 function initLeaderboardZoom(placements) {
