@@ -137,23 +137,31 @@ async function fetchStudentsByIds(ids, studioId) {
   if (!ids.length) return [];
   const { data, error } = await supabase
     .from("users")
-    .select("id, firstName, lastName, avatarUrl, roles, points, level, deactivated_at")
+    .select("id, firstName, lastName, avatarUrl, roles, points, level, active, deactivated_at")
     .in("id", ids)
     .eq("studio_id", studioId)
-    .is("deactivated_at", null);
+    .is("deactivated_at", null)
+    .or("active.is.true,active.is.null");
   if (error) {
     console.error("[Leaderboard] users fetch failed", error);
     return [];
   }
   return (data || []).filter(u => {
     const roles = Array.isArray(u.roles) ? u.roles : [u.roles].filter(Boolean);
-    return roles.includes("student");
+    return roles.includes("student") && isActiveLeaderboardStudent(u);
   });
+}
+
+function isActiveLeaderboardStudent(student) {
+  if (!student) return false;
+  if (student.deactivated_at) return false;
+  if (student.active === false) return false;
+  return true;
 }
 
 function buildTotalsFromUsers(students) {
   const totals = {};
-  (students || []).forEach(student => {
+  (students || []).filter(isActiveLeaderboardStudent).forEach(student => {
     const id = student.id;
     totals[id] = Number(student.points || 0);
   });
@@ -164,7 +172,7 @@ function buildPlacements(students, totals, levels, activeStudentId) {
   const placements = [];
   const perLevelCount = {};
 
-  students.forEach(student => {
+  students.filter(isActiveLeaderboardStudent).forEach(student => {
     const total = totals[student.id] || 0;
     const level = getLevelForPoints(total, levels);
     if (!level) return;

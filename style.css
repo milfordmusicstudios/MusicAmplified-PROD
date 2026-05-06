@@ -4411,6 +4411,21 @@ body.review-logs-page .bulk-approve-panel {
   flex-wrap: wrap;
 }
 
+body.review-logs-page .notification-admin-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+body.review-logs-page .notification-admin-status {
+  color: #0B4F8A;
+  font-size: 14px;
+  font-weight: 800;
+}
+
 
 body.review-logs-page .logs-table-wrap {
   margin-top: 12px;

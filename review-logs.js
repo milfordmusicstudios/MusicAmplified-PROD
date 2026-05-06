@@ -954,8 +954,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       const { data: deletedRows, error } = await supabase.rpc("delete_logs_for_studio", {
-        p_log_ids: numericSelectedIds,
-        p_studio_id: viewerContext.studioId
+        p_studio_id: viewerContext.studioId,
+        p_log_ids: numericSelectedIds
       });
       console.log("[DELETE RESULT]", { selectedIds, numericSelectedIds, deletedRows, error });
       if (error) {
@@ -1110,6 +1110,8 @@ const showLogsBtn = document.getElementById("showLogsBtn");
 const showNotificationsBtn = document.getElementById("showNotificationsBtn");
 const logsWrapper = document.getElementById("logsWrapper");
 const notificationsSection = document.getElementById("notificationsSection");
+const NOTIFICATION_FETCH_PAGE_SIZE = 1000;
+const NOTIFICATION_FETCH_ADMIN_CAP = 20000;
 
 const isLevelUpNotification = (row) => {
   const type = String(row?.type || "").toLowerCase();
@@ -1303,29 +1305,17 @@ const updateRecognitionState = async (row, recognitionGiven, recognitionNote) =>
   }
 };
 
-async function fetchViewerNotifications(limit = 80) {
+async function fetchNotificationsAttemptPages(attempt, limit) {
   const viewerUserId = String(viewerContext?.viewerUserId || "").trim();
   const activeStudioId = String(viewerContext?.studioId || "").trim();
-  const attempts = [
-    { label: "user_id+studio_id", userKey: "user_id", includeStudio: Boolean(activeStudioId) },
-    { label: "user_id:no_studio_filter", userKey: "user_id", includeStudio: false },
-    { label: "legacy_userId+studio_id", userKey: "userId", includeStudio: Boolean(activeStudioId), legacyOnly: true }
-  ];
-  console.log("[NotifDiag][review-logs.js][fetchViewerNotifications] query plan", {
-    source: "review-logs.js::fetchViewerNotifications",
-    viewerUserId,
-    activeStudioId: activeStudioId || null,
-    limit,
-    attempts: attempts.map((attempt) => attempt.label),
-    reason: "Fetch canonical user_id rows first; legacy userId is fallback only."
-  });
-  const rowSets = [];
-  const errors = [];
-  for (const attempt of attempts) {
+  const maxRows = Number.isFinite(Number(limit)) ? Number(limit) : NOTIFICATION_FETCH_ADMIN_CAP;
+  const rows = [];
+  for (let from = 0; from < maxRows; from += NOTIFICATION_FETCH_PAGE_SIZE) {
+    const to = Math.min(from + NOTIFICATION_FETCH_PAGE_SIZE - 1, maxRows - 1);
     const filters = {
       [attempt.userKey]: viewerUserId,
       studio_id: attempt.includeStudio ? activeStudioId : "(omitted)",
-      limit,
+      range: `${from}-${to}`,
       orderBy: "created_at desc"
     };
     console.log("[NotifDiag][review-logs.js][fetchViewerNotifications] query start", {
@@ -1338,7 +1328,7 @@ async function fetchViewerNotifications(limit = 80) {
       .select("*")
       .eq(attempt.userKey, viewerUserId)
       .order("created_at", { ascending: false })
-      .limit(limit);
+      .range(from, to);
     if (attempt.includeStudio) {
       query = query.eq("studio_id", activeStudioId);
     }
@@ -1351,6 +1341,36 @@ async function fetchViewerNotifications(limit = 80) {
       count,
       error: error ?? null
     });
+    if (error) return { data: rows, error };
+    rows.push(...(data || []));
+    if (count < NOTIFICATION_FETCH_PAGE_SIZE) break;
+  }
+  return { data: rows, error: null };
+}
+
+async function fetchViewerNotifications(limit = NOTIFICATION_FETCH_ADMIN_CAP) {
+  const viewerUserId = String(viewerContext?.viewerUserId || "").trim();
+  const activeStudioId = String(viewerContext?.studioId || "").trim();
+  const maxRows = Number.isFinite(Number(limit)) ? Number(limit) : NOTIFICATION_FETCH_ADMIN_CAP;
+  const attempts = [
+    { label: "user_id+studio_id", userKey: "user_id", includeStudio: Boolean(activeStudioId) },
+    { label: "user_id:no_studio_filter", userKey: "user_id", includeStudio: false },
+    { label: "legacy_userId+studio_id", userKey: "userId", includeStudio: Boolean(activeStudioId), legacyOnly: true }
+  ];
+  console.log("[NotifDiag][review-logs.js][fetchViewerNotifications] query plan", {
+    source: "review-logs.js::fetchViewerNotifications",
+    viewerUserId,
+    activeStudioId: activeStudioId || null,
+    limit: maxRows,
+    pageSize: NOTIFICATION_FETCH_PAGE_SIZE,
+    attempts: attempts.map((attempt) => attempt.label),
+    reason: "Fetch canonical user_id rows first; legacy userId is fallback only; page through results."
+  });
+  const rowSets = [];
+  const errors = [];
+  for (const attempt of attempts) {
+    const { data, error } = await fetchNotificationsAttemptPages(attempt, maxRows);
+    const count = Array.isArray(data) ? data.length : 0;
     if (error) {
       errors.push({ attempt: attempt.label, error });
       continue;
@@ -1358,12 +1378,14 @@ async function fetchViewerNotifications(limit = 80) {
     if (attempt.legacyOnly && rowSets.length > 0) continue;
     if (count > 0) rowSets.push(data);
   }
-  const merged = mergeNotificationRows(rowSets, limit);
+  const merged = mergeNotificationRows(rowSets, maxRows);
   console.log("[NotifDiag][review-logs.js][fetchViewerNotifications] merged result", {
     source: "review-logs.js::fetchViewerNotifications",
     viewerUserId,
     activeStudioId: activeStudioId || null,
     mergedCount: merged.length,
+    pageSize: NOTIFICATION_FETCH_PAGE_SIZE,
+    cap: maxRows,
     errorCount: errors.length,
     errors
   });
@@ -1375,7 +1397,7 @@ async function fetchViewerNotifications(limit = 80) {
 
 async function updateNotificationsButtonState() {
   if (!showNotificationsBtn) return;
-  const { data, error } = await fetchViewerNotifications(60);
+  const { data, error } = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
   if (error) {
     console.warn("[ReviewLogs] notification button state fetch failed", error);
     showNotificationsBtn.classList.remove("has-alert");
@@ -1409,10 +1431,56 @@ if (showLogsBtn && showNotificationsBtn) {
   });
 }
 
-async function loadNotifications() {
+function createNotificationAdminControls(statusText = "") {
+  const controls = document.createElement("div");
+  controls.className = "notification-admin-controls";
+  if (!viewerContext?.isAdmin) return controls;
+
+  const button = document.createElement("button");
+  button.id = "recalculateNotificationsBtn";
+  button.className = "blue-button";
+  button.type = "button";
+  button.textContent = "Recalculate Notifications";
+
+  const status = document.createElement("span");
+  status.className = "notification-admin-status";
+  status.textContent = statusText;
+
+  button.addEventListener("click", async () => {
+    if (!confirm("This will rebuild missing level-up notifications. Continue?")) return;
+    button.disabled = true;
+    status.textContent = "Recalculating...";
+    try {
+      const { data, error } = await supabase.rpc("backfill_level_notifications_for_studio", {
+        p_studio_id: viewerContext.studioId
+      });
+      if (error) throw error;
+      const created = Number(data?.insertedNotifications ?? data?.inserted_notifications ?? 0);
+      console.log("[ReviewLogs] notification backfill complete", {
+        rpc: "backfill_level_notifications_for_studio",
+        studioId: viewerContext.studioId,
+        result: data,
+        created
+      });
+      await loadNotifications(`Created ${created} notification${created === 1 ? "" : "s"}.`);
+      await updateNotificationsButtonState();
+      window.dispatchEvent(new Event("aa:notification-state-changed"));
+    } catch (error) {
+      console.error("[ReviewLogs] notification backfill failed", error);
+      status.textContent = "Recalculation failed: " + (error?.message || "Unknown error");
+      button.disabled = false;
+    }
+  });
+
+  controls.appendChild(button);
+  controls.appendChild(status);
+  return controls;
+}
+
+async function loadNotifications(statusText = "") {
   notificationsSection.innerHTML = "<p>Loading notifications...</p>";
 
-  const { data: notifications, error } = await fetchViewerNotifications(120);
+  const { data: notifications, error } = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
 
   console.log("[NotifDiag][review-logs.js][loadNotifications] render fetch", {
     source: "review-logs.js::loadNotifications",
@@ -1429,11 +1497,15 @@ async function loadNotifications() {
   }
 
   if (!notifications || notifications.length === 0) {
-    notificationsSection.innerHTML = "<p>No notifications yet.</p>";
+    notificationsSection.innerHTML = "";
+    notificationsSection.appendChild(createNotificationAdminControls(statusText));
+    const empty = document.createElement("p");
+    empty.textContent = "No notifications yet.";
+    notificationsSection.appendChild(empty);
     return;
   }
 
-  const uniqueNotifications = mergeNotificationRows([notifications], 120);
+  const uniqueNotifications = mergeNotificationRows([notifications], NOTIFICATION_FETCH_ADMIN_CAP);
   await markNotificationsRead(uniqueNotifications);
   const normalizedNotifications = uniqueNotifications.map((row) => ({ ...row, read: true }));
 
@@ -1553,6 +1625,7 @@ async function loadNotifications() {
   });
 
   notificationsSection.innerHTML = "";
+  notificationsSection.appendChild(createNotificationAdminControls(statusText));
   notificationsSection.appendChild(list);
   await updateNotificationsButtonState();
 }
