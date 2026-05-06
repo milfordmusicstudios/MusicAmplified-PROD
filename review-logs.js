@@ -1307,13 +1307,20 @@ const getNotificationStudentName = (row) => {
   return rosterMatch ? getQuickAddStudentName(rosterMatch) : "";
 };
 const getNotificationDedupeKey = (row) => {
-  const levelOrMessage = Number.isFinite(getNotificationLevelNumber(row))
-    ? `level:${getNotificationLevelNumber(row)}`
-    : `message:${String(row?.message || "").trim().toLowerCase()}`;
+  const type = getNotificationType(row);
+  const levelNumber = getNotificationLevelNumber(row);
+  const messageKey = String(row?.message || "").trim().toLowerCase();
+  const studentName = getNotificationStudentName(row).toLowerCase();
+  const levelOrMessage = Number.isFinite(levelNumber)
+    ? `level:${levelNumber}`
+    : `message:${messageKey}`;
+  const personKey = (type === "level_completed" || type === "level_up")
+    ? (studentName || messageKey)
+    : getNotificationUserId(row);
   return [
     String(row?.studio_id || "").trim(),
-    getNotificationUserId(row),
-    getNotificationType(row),
+    personKey,
+    type,
     levelOrMessage
   ].join("|");
 };
@@ -1339,7 +1346,11 @@ const sortNotificationsNewestFirst = (rows) => [...rows].sort((a, b) => {
 const mergeNotificationRows = (rowSets, limit) => {
   const seen = new Set();
   const merged = [];
-  rowSets.flat().forEach((row) => {
+  rowSets.flat().sort((a, b) => {
+    const aTime = new Date(a?.created_at || 0).getTime();
+    const bTime = new Date(b?.created_at || 0).getTime();
+    return aTime - bTime;
+  }).forEach((row) => {
     if (!row) return;
     const key = getNotificationDedupeKey(row) || String(row?.id || `${row?.created_at || ""}:${row?.message || ""}:${row?.userId || row?.user_id || ""}`);
     if (seen.has(key)) return;
@@ -1917,16 +1928,28 @@ function createNotificationAdminControls(statusText = "") {
       });
       if (error) throw error;
       const created = Number(data?.insertedNotifications ?? data?.inserted_notifications ?? 0);
+      const updatedTimestamps = Number(data?.updatedTimestamps ?? data?.updated_timestamps ?? data?.updatedNotificationTimestamps ?? 0);
+      const timestampUpdatesAttempted = Number(data?.timestampUpdatesAttempted ?? data?.timestamp_updates_attempted ?? 0);
+      const timestampUpdatesCompleted = Number(data?.timestampUpdatesCompleted ?? data?.timestamp_updates_completed ?? updatedTimestamps);
+      const duplicateGroupsFound = Number(data?.duplicateGroupsFound ?? data?.duplicate_groups_found ?? 0);
+      const preview = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
+      if (preview.error) throw preview.error;
+      const rawPreviewCount = Array.isArray(preview.data) ? preview.data.length : 0;
+      const dedupedPreview = mergeNotificationRows([preview.data || []], NOTIFICATION_FETCH_ADMIN_CAP);
+      const hiddenDuplicates = Math.max(0, rawPreviewCount - dedupedPreview.length);
       console.log("[ReviewLogs] notification backfill complete", {
         rpc: "backfill_level_notifications_for_studio",
         studioId: viewerContext.studioId,
         result: data,
-        created
+        created,
+        timestampUpdatesAttempted,
+        timestampUpdatesCompleted,
+        duplicateGroupsFound,
+        hiddenDuplicates
       });
-      const updatedTimestamps = Number(data?.updatedTimestamps ?? data?.updated_timestamps ?? data?.updatedNotificationTimestamps ?? 0);
       await loadNotifications(
-        `Created ${created} notification${created === 1 ? "" : "s"}; updated ${updatedTimestamps} timestamp${updatedTimestamps === 1 ? "" : "s"}.`,
-        { resetPage: true }
+        `Created ${created} notification${created === 1 ? "" : "s"}; updated ${updatedTimestamps} timestamp${updatedTimestamps === 1 ? "" : "s"}; hidden ${hiddenDuplicates} duplicate${hiddenDuplicates === 1 ? "" : "s"}.`,
+        { resetPage: true, prefetchedNotifications: preview.data, prefetchedError: preview.error }
       );
       await updateNotificationsButtonState();
       window.dispatchEvent(new Event("aa:notification-state-changed"));
@@ -1948,7 +1971,13 @@ async function loadNotifications(statusText = "", options = {}) {
   let notificationPageSize = Number(document.getElementById("logsPerPage")?.value || DEFAULT_NOTIFICATION_PAGE_SIZE);
   if (!Number.isFinite(notificationPageSize) || notificationPageSize <= 0) notificationPageSize = DEFAULT_NOTIFICATION_PAGE_SIZE;
 
-  const { data: notifications, error } = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
+  const prefetchedNotifications = Array.isArray(options?.prefetchedNotifications)
+    ? options.prefetchedNotifications
+    : null;
+  const fetchResult = prefetchedNotifications
+    ? { data: prefetchedNotifications, error: options?.prefetchedError || null }
+    : await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
+  const { data: notifications, error } = fetchResult;
 
   console.log("[NotifDiag][review-logs.js][loadNotifications] render fetch", {
     source: "review-logs.js::loadNotifications",
@@ -1970,7 +1999,7 @@ async function loadNotifications(statusText = "", options = {}) {
     const empty = document.createElement("p");
     empty.textContent = "No notifications yet.";
     notificationsSection.appendChild(empty);
-    return;
+    return { rawNotificationCount: 0, dedupedNotificationCount: 0, hiddenDuplicateCount: 0 };
   }
 
   const rawNotificationCount = Array.isArray(notifications) ? notifications.length : 0;
@@ -1980,11 +2009,14 @@ async function loadNotifications(statusText = "", options = {}) {
   const filteredNotifications = applyNotificationFiltersAndSort(normalizedNotifications);
   const dedupedNotificationCount = normalizedNotifications.length;
   const filteredNotificationCount = filteredNotifications.length;
+  const hiddenDuplicateCount = Math.max(0, rawNotificationCount - dedupedNotificationCount);
 
   console.log("[ReviewLogs] notifications fetched for render", {
     rawNotificationCount,
     dedupedNotificationCount,
     filteredNotificationCount,
+    duplicateGroupsFound: hiddenDuplicateCount,
+    duplicatesHiddenInUi: hiddenDuplicateCount,
     currentPage: notificationCurrentPage,
     pageSize: notificationPageSize,
     activeFilters: notificationFilters
@@ -1994,6 +2026,7 @@ async function loadNotifications(statusText = "", options = {}) {
     rawNotificationCount,
     dedupedNotificationCount,
     filteredNotificationCount,
+    duplicatesHiddenInUi: hiddenDuplicateCount,
     currentPage: notificationCurrentPage,
     pageSize: notificationPageSize,
     renderedNotificationCount: 0
@@ -2181,6 +2214,7 @@ async function loadNotifications(statusText = "", options = {}) {
       rawNotificationCount,
       dedupedNotificationCount,
       filteredNotificationCount,
+      duplicatesHiddenInUi: hiddenDuplicateCount,
       totalNotificationsRendered: pageRows.length,
       totalNotificationsAvailable: filteredNotifications.length,
       currentPage: notificationCurrentPage,
@@ -2217,6 +2251,12 @@ async function loadNotifications(statusText = "", options = {}) {
   notificationsSection.appendChild(pager);
   notificationsSection.appendChild(list);
   await updateNotificationsButtonState();
+  return {
+    rawNotificationCount,
+    dedupedNotificationCount,
+    filteredNotificationCount,
+    hiddenDuplicateCount
+  };
 }
 
 await updateNotificationsButtonState();
