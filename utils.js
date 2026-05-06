@@ -1008,7 +1008,7 @@ function showLevelUpPopup(userName, newLevelName) {
         max-width: 340px;
         animation: fadeIn 0.3s ease;
       ">
-        <h2 style="color:#00477d; margin-bottom:10px;">🎉 Level Up!</h2>
+        <h2 style="color:#00477d; margin-bottom:10px;">🎉 Level Completed!</h2>
         <p>${userName} completed <b>${displayName}</b>!</p>
         <button id="closeLevelUpPopup" class="blue-button" style="margin-top:15px;">OK</button>
       </div>

@@ -142,22 +142,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   };
 
-  const backfillLevelUpNotificationsForStudio = async () => {
+  const backfillLevelCompletedNotificationsForStudio = async () => {
     const activeStudioId = String(viewerContext?.studioId || "").trim();
     if (!activeStudioId) {
       throw new Error("No active studio id available for notification backfill.");
     }
-    console.log("[NotifDiag][review-logs.js][backfillLevelUpNotificationsForStudio] rpc start", {
-      source: "review-logs.js::backfillLevelUpNotificationsForStudio",
-      rpc: "backfill_level_up_notifications_for_studio",
+    console.log("[NotifDiag][review-logs.js][backfillLevelCompletedNotificationsForStudio] rpc start", {
+      source: "review-logs.js::backfillLevelCompletedNotificationsForStudio",
+      rpc: "backfill_level_notifications_for_studio",
       studio_id: activeStudioId,
       user_id: viewerContext?.viewerUserId || null
     });
-    const { data, error } = await supabase.rpc("backfill_level_up_notifications_for_studio", {
+    const { data, error } = await supabase.rpc("backfill_level_notifications_for_studio", {
       p_studio_id: activeStudioId
     });
-    console.log("[NotifDiag][review-logs.js][backfillLevelUpNotificationsForStudio] rpc result", {
-      source: "review-logs.js::backfillLevelUpNotificationsForStudio",
+    console.log("[NotifDiag][review-logs.js][backfillLevelCompletedNotificationsForStudio] rpc result", {
+      source: "review-logs.js::backfillLevelCompletedNotificationsForStudio",
       data: data ?? null,
       error: error ?? null
     });
@@ -166,10 +166,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     return data;
   };
 
-  window.AA_backfillLevelUpNotificationsForStudio = backfillLevelUpNotificationsForStudio;
+  window.AA_backfillLevelCompletedNotificationsForStudio = backfillLevelCompletedNotificationsForStudio;
 
   if (new URLSearchParams(window.location.search).get("backfillNotifications") === "studio") {
-    backfillLevelUpNotificationsForStudio().catch((error) => {
+    backfillLevelCompletedNotificationsForStudio().catch((error) => {
       console.warn("[ReviewLogs] notification backfill failed", error);
       showReviewLogsError("Notification backfill failed.", error);
     });
@@ -1291,7 +1291,22 @@ const getRecognitionNoteValue = (row) =>
 
 const getNotificationUserId = (row) => String(row?.user_id || row?.userId || "").trim();
 const getNotificationType = (row) => String(row?.type || "").trim().toLowerCase();
-const getNotificationText = (row) => `${row?.title || ""} ${row?.message || ""}`.trim();
+const getCanonicalNotificationType = (row) =>
+  isLevelUpNotification(row) ? "level_completed" : getNotificationType(row);
+const getNotificationDisplayMessage = (row) => {
+  const message = String(row?.message || "").trim();
+  const legacy = message.match(/^\s*(.*?)\s+(?:reached|advanced to)\s+Level\s+(?:Level\s+)?([0-9]+)\.?\s*$/i);
+  if (legacy) {
+    const studentName = legacy[1]?.trim() || "Student";
+    const enteredLevel = Number(legacy[2]);
+    const completedLevel = enteredLevel - 1;
+    if (Number.isFinite(completedLevel) && completedLevel > 0) {
+      return `${studentName} completed Level ${completedLevel}.`;
+    }
+  }
+  return message;
+};
+const getNotificationText = (row) => `${row?.title || ""} ${getNotificationDisplayMessage(row)}`.trim();
 const getNotificationLevelNumber = (row) => {
   const direct = Number(row?.completed_level_start ?? row?.completedLevelStart ?? row?.completed_level_end ?? row?.completedLevelEnd);
   if (Number.isFinite(direct) && direct > 0) return direct;
@@ -1299,15 +1314,17 @@ const getNotificationLevelNumber = (row) => {
   return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
 };
 const getNotificationStudentName = (row) => {
-  const message = String(row?.message || "").trim();
+  const message = getNotificationDisplayMessage(row);
   const match = message.match(/^(.+?)\s+(?:completed|reached|advanced)/i);
   if (match?.[1]) return match[1].trim();
   const userId = getNotificationUserId(row);
   const rosterMatch = notificationFilterRoster.find((student) => String(student.id) === userId);
   return rosterMatch ? getQuickAddStudentName(rosterMatch) : "";
 };
+const isRecognitionTestAccountNotification = (row) =>
+  isLevelUpNotification(row) && getNotificationStudentName(row).toLowerCase() === "milford music";
 const getNotificationDedupeKey = (row) => {
-  const type = getNotificationType(row);
+  const type = getCanonicalNotificationType(row);
   const levelNumber = getNotificationLevelNumber(row);
   const messageKey = String(row?.message || "").trim().toLowerCase();
   const studentName = getNotificationStudentName(row).toLowerCase();
@@ -1670,6 +1687,7 @@ function applyNotificationFiltersAndSort(rows) {
   }).filter(Boolean);
   const keyword = notificationFilters.keyword.toLowerCase();
   const filtered = (Array.isArray(rows) ? rows : []).filter((row) => {
+    if (isRecognitionTestAccountNotification(row)) return false;
     const dateOnly = getDateOnlyString(row?.created_at);
     const text = getNotificationText(row).toLowerCase();
     const userId = getNotificationUserId(row);
@@ -1679,7 +1697,7 @@ function applyNotificationFiltersAndSort(rows) {
     const matchesFrom = !notificationFilters.dateFrom || (dateOnly && dateOnly >= notificationFilters.dateFrom);
     const matchesTo = !notificationFilters.dateTo || (dateOnly && dateOnly <= notificationFilters.dateTo);
     const matchesKeyword = !keyword || text.includes(keyword);
-    const matchesType = !notificationFilters.type || getNotificationType(row) === notificationFilters.type;
+    const matchesType = !notificationFilters.type || getCanonicalNotificationType(row) === notificationFilters.type;
     const recognized = isRecognitionGiven(row);
     const matchesRecognition = notificationFilters.recognition === "all" ||
       (notificationFilters.recognition === "given" && recognized) ||
@@ -1929,7 +1947,7 @@ function createNotificationAdminControls(statusText = "") {
   button.textContent = "Recalculate Notifications";
 
   button.addEventListener("click", async () => {
-    if (!confirm("This will rebuild missing level-up notifications. Continue?")) return;
+    if (!confirm("This will rebuild missing level-completion notifications. Continue?")) return;
     button.disabled = true;
     status.textContent = "Recalculating...";
     try {
@@ -2140,7 +2158,7 @@ async function loadNotifications(statusText = "", options = {}) {
     li.innerHTML = `
       <div class="review-notification-main">
         <b>${new Date(n.created_at).toLocaleString()}</b><br>
-        ${n.message || ""}
+        ${getNotificationDisplayMessage(n) || ""}
         ${isLevelUp && recognized && recognitionTime ? `<div class="review-notification-recorded">Recognition recorded on ${recognitionTime}${recognitionBy ? ` by ${recognitionBy}` : ""}</div>` : ""}
       </div>
       ${isLevelUp ? `

@@ -353,7 +353,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (storedLevel === null) {
         setLastToastLevel(userId, currentLevelNumber);
       } else if (currentLevelNumber > storedLevel) {
-        showToast(`🎉 You reached Level ${currentLevelNumber}!`);
+        const completedLevel = currentLevelNumber - 1;
+        showToast(completedLevel > 0 ? `🎉 You completed Level ${completedLevel}!` : `🎉 Level progress updated!`);
         setLastToastLevel(userId, currentLevelNumber);
       }
     }
