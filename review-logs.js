@@ -1255,6 +1255,7 @@ let notificationFilters = {
 };
 let notificationFilterRoster = [];
 const notificationSelectedStudentIds = new Set();
+let latestRecognitionNotificationRows = [];
 
 const isLevelUpNotification = (row) => {
   const type = String(row?.type || "").toLowerCase();
@@ -1326,7 +1327,7 @@ const getNotificationDisplayMessage = (row) => {
 };
 const getNotificationText = (row) => `${row?.title || ""} ${getNotificationDisplayMessage(row)}`.trim();
 const getNotificationLevelNumber = (row) => {
-  const direct = Number(row?.completed_level_start ?? row?.completedLevelStart ?? row?.completed_level_end ?? row?.completedLevelEnd);
+  const direct = Number(row?.completed_level_end ?? row?.completedLevelEnd ?? row?.completed_level_start ?? row?.completedLevelStart);
   if (Number.isFinite(direct) && direct > 0) return direct;
   const match = String(row?.message || "").match(/\bLevels?\s+(\d+)/i);
   return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
@@ -1345,6 +1346,151 @@ const shouldHideRecognitionNotification = (row) =>
   isRecognitionTestAccountNotification(row) ||
   hasLegacyLevelNotificationLanguage(row) ||
   hasInvalidLevelNotificationTimestamp(row);
+
+const getHighestCompletedLevelsForRecognition = (notifications = []) => {
+  const byStudent = new Map();
+  (Array.isArray(notifications) ? notifications : []).forEach((row) => {
+    if (!row || shouldHideRecognitionNotification(row)) return;
+    if (getCanonicalNotificationType(row) !== "level_completed") return;
+    const level = getNotificationLevelNumber(row);
+    if (!Number.isFinite(level) || level <= 0) return;
+    const student = getNotificationStudentName(row).trim();
+    if (!student || student.toLowerCase() === "milford music") return;
+    const createdAt = new Date(row?.created_at || "");
+    if (Number.isNaN(createdAt.getTime()) || createdAt.getFullYear() < 2024) return;
+    const key = student.toLowerCase();
+    const existing = byStudent.get(key);
+    if (
+      !existing ||
+      level > existing.level ||
+      (level === existing.level && createdAt.getTime() < existing.createdAt.getTime())
+    ) {
+      byStudent.set(key, { student, level, createdAt });
+    }
+  });
+  return Array.from(byStudent.values()).sort((a, b) =>
+    a.student.localeCompare(b.student, undefined, { sensitivity: "base" })
+  );
+};
+
+window.getHighestCompletedLevelsForRecognition = getHighestCompletedLevelsForRecognition;
+
+const formatRecognitionExportDate = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("en-US");
+};
+
+const csvEscape = (value) => {
+  const text = String(value ?? "");
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+};
+
+const getCurrentRecognitionSummary = async () => {
+  if (latestRecognitionNotificationRows.length) {
+    return getHighestCompletedLevelsForRecognition(latestRecognitionNotificationRows);
+  }
+  const { data, error } = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
+  if (error) throw error;
+  const deduped = sortNotificationsNewestFirst(mergeNotificationRows([data || []], NOTIFICATION_FETCH_ADMIN_CAP));
+  return getHighestCompletedLevelsForRecognition(deduped);
+};
+
+const downloadRecognitionCsv = async (statusEl) => {
+  try {
+    const summary = await getCurrentRecognitionSummary();
+    const rows = [
+      ["Student", "Highest Completed Level", "Completion Date"],
+      ...summary.map((row) => [
+        row.student,
+        row.level,
+        formatRecognitionExportDate(row.createdAt)
+      ])
+    ];
+    const csv = rows.map((row) => row.map(csvEscape).join(",")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "recital-recognition-levels.csv";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    if (statusEl) statusEl.textContent = `Exported ${summary.length} student${summary.length === 1 ? "" : "s"}.`;
+  } catch (error) {
+    console.error("[ReviewLogs] recognition CSV export failed", error);
+    if (statusEl) statusEl.textContent = "CSV export failed: " + (error?.message || "Unknown error");
+  }
+};
+
+const htmlEscape = (value) => String(value ?? "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+
+const printRecognitionSummary = async (statusEl) => {
+  try {
+    const summary = await getCurrentRecognitionSummary();
+    const generatedAt = new Date().toLocaleDateString("en-US");
+    const rowsHtml = summary.length
+      ? summary.map((row) => `
+          <tr>
+            <td>${htmlEscape(row.student)}</td>
+            <td>${htmlEscape(row.level)}</td>
+            <td>${htmlEscape(formatRecognitionExportDate(row.createdAt))}</td>
+          </tr>
+        `).join("")
+      : '<tr><td colspan="3">No level-completion recognitions found.</td></tr>';
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      if (statusEl) statusEl.textContent = "Print popup was blocked.";
+      return;
+    }
+    printWindow.document.write(`<!doctype html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Recital Recognition List</title>
+        <style>
+          body { font-family: Arial, sans-serif; color: #123; margin: 32px; }
+          h1 { margin: 0 0 4px; font-size: 28px; }
+          h2 { margin: 0 0 8px; font-size: 16px; font-weight: 600; color: #345; }
+          .generated { margin: 0 0 24px; font-size: 12px; color: #556; }
+          table { width: 100%; border-collapse: collapse; }
+          th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #ccd8e2; }
+          th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #345; }
+          @media print { body { margin: 20mm; } }
+        </style>
+      </head>
+      <body>
+        <h1>Recital Recognition List</h1>
+        <h2>Highest Completed Level Per Student</h2>
+        <p class="generated">Generated ${htmlEscape(generatedAt)}</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Student</th>
+              <th>Highest Completed Level</th>
+              <th>Completion Date</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        <script>
+          window.addEventListener("load", () => {
+            window.print();
+          });
+        <\/script>
+      </body>
+      </html>`);
+    printWindow.document.close();
+    if (statusEl) statusEl.textContent = `Prepared ${summary.length} student${summary.length === 1 ? "" : "s"} for print.`;
+  } catch (error) {
+    console.error("[ReviewLogs] recognition print export failed", error);
+    if (statusEl) statusEl.textContent = "Print export failed: " + (error?.message || "Unknown error");
+  }
+};
 const getNotificationDedupeKey = (row) => {
   const type = getCanonicalNotificationType(row);
   const levelNumber = getNotificationLevelNumber(row);
@@ -1967,6 +2113,10 @@ function createNotificationAdminControls(statusText = "") {
   const controls = document.createElement("div");
   controls.className = "notification-admin-controls";
 
+  const status = document.createElement("span");
+  status.className = "notification-admin-status";
+  status.textContent = statusText;
+
   const filterButton = document.createElement("button");
   filterButton.id = "filterNotificationsBtn";
   filterButton.className = "blue-button";
@@ -1977,9 +2127,25 @@ function createNotificationAdminControls(statusText = "") {
   });
   controls.appendChild(filterButton);
 
-  const status = document.createElement("span");
-  status.className = "notification-admin-status";
-  status.textContent = statusText;
+  const csvButton = document.createElement("button");
+  csvButton.id = "exportRecognitionCsvBtn";
+  csvButton.className = "blue-button";
+  csvButton.type = "button";
+  csvButton.textContent = "Export Recognition CSV";
+  csvButton.addEventListener("click", () => {
+    void downloadRecognitionCsv(status);
+  });
+  controls.appendChild(csvButton);
+
+  const printButton = document.createElement("button");
+  printButton.id = "printRecognitionListBtn";
+  printButton.className = "blue-button";
+  printButton.type = "button";
+  printButton.textContent = "Print / Save PDF";
+  printButton.addEventListener("click", () => {
+    void printRecognitionSummary(status);
+  });
+  controls.appendChild(printButton);
 
   if (!viewerContext?.isAdmin) {
     controls.appendChild(status);
@@ -2078,6 +2244,7 @@ async function loadNotifications(statusText = "", options = {}) {
   }
 
   if (!notifications || notifications.length === 0) {
+    latestRecognitionNotificationRows = [];
     notificationsSection.innerHTML = "";
     notificationsSection.appendChild(createNotificationAdminControls(statusText));
     const empty = document.createElement("p");
@@ -2090,6 +2257,7 @@ async function loadNotifications(statusText = "", options = {}) {
   const dedupedNotifications = sortNotificationsNewestFirst(mergeNotificationRows([notifications], NOTIFICATION_FETCH_ADMIN_CAP));
   await markNotificationsRead(dedupedNotifications);
   const normalizedNotifications = dedupedNotifications.map((row) => ({ ...row, read: true }));
+  latestRecognitionNotificationRows = normalizedNotifications;
   const filteredNotifications = applyNotificationFiltersAndSort(normalizedNotifications);
   const dedupedNotificationCount = normalizedNotifications.length;
   const filteredNotificationCount = filteredNotifications.length;
