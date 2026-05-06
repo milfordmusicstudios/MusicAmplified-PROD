@@ -2937,6 +2937,7 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
   const categoryRowsByName = new Map();
   let practiceDatesByStudentId = new Map();
   let practiceDatesRequestToken = 0;
+  let staffStudentRows = [];
 
   const syncPracticePoints = () => {
     if (!categorySelect || !pointsInput) return;
@@ -3192,6 +3193,25 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
     }
   };
 
+  const clearStaffQuickLogForm = () => {
+    selectedStudentIds.clear();
+    selectedDates.clear();
+    practiceDatesByStudentId = new Map();
+    if (studentSearchInput) studentSearchInput.value = "";
+    if (studentDropdown) {
+      studentDropdown.innerHTML = "";
+      studentDropdown.setAttribute("hidden", "");
+    }
+    if (categorySelect) categorySelect.value = "";
+    if (notesInput) notesInput.value = "";
+    syncStudentSelect();
+    renderSelectedStudents(staffStudentRows);
+    syncPracticePoints();
+    if (calendarPanel) calendarPanel.setAttribute("hidden", "");
+    renderStaffCalendar();
+    updateStaffCalendarToggle();
+  };
+
   if (prevBtn && nextBtn) {
     prevBtn.addEventListener("click", () => {
       const prevMonth = new Date(view.year, view.month - 1, 1);
@@ -3270,6 +3290,7 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
       const sortedStudents = [...students].sort((a, b) => {
         return getStudentName(a).localeCompare(getStudentName(b), undefined, { sensitivity: 'base' });
       });
+      staffStudentRows = sortedStudents;
 
       studentSelect.disabled = false;
       studentSelect.innerHTML = '';
@@ -3453,6 +3474,7 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
       msgEl.style.display = 'block';
       msgEl.style.color = '#0b7a3a';
     }
+    clearStaffQuickLogForm();
     // Success feedback is shown inline via `msgEl` for quick log submissions.
     dispatchTutorialAction("aa:tutorial-staff-quick-log-complete");
   });
