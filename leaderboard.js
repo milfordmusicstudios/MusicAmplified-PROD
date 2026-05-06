@@ -62,10 +62,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     const totals = buildTotalsFromUsers(students);
-    if (countEl) countEl.textContent = `Showing ${students.length} students`;
 
     const activeStudentId = localStorage.getItem("aa.activeStudentId") || null;
     const placements = buildPlacements(students, totals, levels, activeStudentId);
+    if (countEl) countEl.textContent = `Showing ${placements.length} students`;
+    console.log("[Leaderboard] render summary", {
+      totalStudentsFetched: studentIds.length,
+      inactiveStudentsRemoved: Math.max(0, studentIds.length - students.length),
+      finalLeaderboardStudentsRendered: placements.length,
+      activeStatusFieldsUsed: ["users.active = true", "users.deactivated_at is null", "users.showonleaderboard is not false"],
+      dataSource: "studio_members user ids + users table filtered query"
+    });
     renderAvatars(placements);
     initLeaderboardZoom(placements);
 
@@ -137,25 +144,35 @@ async function fetchStudentsByIds(ids, studioId) {
   if (!ids.length) return [];
   const { data, error } = await supabase
     .from("users")
-    .select("id, firstName, lastName, avatarUrl, roles, points, level, active, deactivated_at")
+    .select("id, firstName, lastName, avatarUrl, roles, points, level, active, deactivated_at, showonleaderboard")
     .in("id", ids)
     .eq("studio_id", studioId)
+    .eq("active", true)
     .is("deactivated_at", null)
-    .or("active.is.true,active.is.null");
+    .or("showonleaderboard.is.true,showonleaderboard.is.null");
   if (error) {
     console.error("[Leaderboard] users fetch failed", error);
     return [];
   }
-  return (data || []).filter(u => {
+  const students = (data || []).filter(u => {
     const roles = Array.isArray(u.roles) ? u.roles : [u.roles].filter(Boolean);
     return roles.includes("student") && isActiveLeaderboardStudent(u);
   });
+  console.log("[Leaderboard] active student filter", {
+    totalStudentsFetched: ids.length,
+    activeStudentsReturnedFromUsersQuery: Array.isArray(data) ? data.length : 0,
+    inactiveStudentsRemoved: Math.max(0, ids.length - students.length),
+    finalLeaderboardStudentsRendered: students.length,
+    activeStatusFieldsUsed: ["active", "deactivated_at", "showonleaderboard"]
+  });
+  return students;
 }
 
 function isActiveLeaderboardStudent(student) {
   if (!student) return false;
   if (student.deactivated_at) return false;
-  if (student.active === false) return false;
+  if (student.active !== true) return false;
+  if (student.showonleaderboard === false) return false;
   return true;
 }
 
