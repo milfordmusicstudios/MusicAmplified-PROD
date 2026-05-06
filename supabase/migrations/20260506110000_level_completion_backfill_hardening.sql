@@ -12,7 +12,7 @@ set search_path = public
 as $$
   select case
     when p_value is null then null
-    when extract(year from p_value) < 2020 then null
+    when extract(year from p_value) < 2024 then null
     when extract(year from p_value) > extract(year from now()) + 1 then null
     else p_value
   end;
@@ -613,6 +613,136 @@ $$;
 revoke all on function public.backfill_level_up_notifications_for_studio(uuid) from public;
 grant execute on function public.backfill_level_up_notifications_for_studio(uuid) to authenticated;
 
+with legacy as (
+  select
+    n.id,
+    n.studio_id,
+    coalesce(n.user_id, n."userId") as recipient_id,
+    (regexp_match(n.message, '^\s*(.*?)\s+(?:reached|advanced to)\s+Level\s+(?:Level\s+)?([0-9]+)\.?\s*$', 'i'))[1] as student_name,
+    ((regexp_match(n.message, '^\s*(.*?)\s+(?:reached|advanced to)\s+Level\s+(?:Level\s+)?([0-9]+)\.?\s*$', 'i'))[2]::integer - 1) as completed_level,
+    row_number() over (
+      partition by
+        n.studio_id,
+        coalesce(n.user_id, n."userId"),
+        ((regexp_match(n.message, '^\s*(.*?)\s+(?:reached|advanced to)\s+Level\s+(?:Level\s+)?([0-9]+)\.?\s*$', 'i'))[2]::integer - 1)
+      order by n.created_at asc, n.id asc
+    ) as target_rank
+  from public.notifications n
+  where lower(coalesce(n.type, '')) = 'level_up'
+    and n.message ~* '^\s*.*\s+(reached|advanced to)\s+Level\s+(Level\s+)?[0-9]+\.?\s*$'
+),
+updatable as (
+  select l.*
+  from legacy l
+  where l.completed_level > 0
+    and l.target_rank = 1
+    and not exists (
+      select 1
+      from public.notifications existing
+      where existing.studio_id is not distinct from l.studio_id
+        and coalesce(existing.user_id, existing."userId") is not distinct from l.recipient_id
+        and lower(coalesce(existing.type, '')) = 'level_completed'
+        and existing.completed_level_start is not distinct from l.completed_level
+        and existing.completed_level_end is not distinct from l.completed_level
+    )
+)
+update public.notifications n
+set
+  type = 'level_completed',
+  title = 'Level Completed',
+  completed_level_start = u.completed_level,
+  completed_level_end = u.completed_level,
+  message = public.format_level_completed_notification_message(u.student_name, u.completed_level, u.completed_level)
+from updatable u
+where n.id = u.id;
+
+with legacy as (
+  select
+    n.id,
+    n.studio_id,
+    coalesce(n.user_id, n."userId") as recipient_id,
+    ((regexp_match(n.message, '^\s*(.*?)\s+(?:reached|advanced to)\s+Level\s+(?:Level\s+)?([0-9]+)\.?\s*$', 'i'))[2]::integer - 1) as completed_level,
+    row_number() over (
+      partition by
+        n.studio_id,
+        coalesce(n.user_id, n."userId"),
+        ((regexp_match(n.message, '^\s*(.*?)\s+(?:reached|advanced to)\s+Level\s+(?:Level\s+)?([0-9]+)\.?\s*$', 'i'))[2]::integer - 1)
+      order by n.created_at asc, n.id asc
+    ) as target_rank
+  from public.notifications n
+  where lower(coalesce(n.type, '')) = 'level_up'
+    and n.message ~* '^\s*.*\s+(reached|advanced to)\s+Level\s+(Level\s+)?[0-9]+\.?\s*$'
+)
+delete from public.notifications n
+using legacy l
+where n.id = l.id
+  and (
+    l.completed_level <= 0
+    or l.target_rank > 1
+    or exists (
+      select 1
+      from public.notifications existing
+      where existing.studio_id is not distinct from l.studio_id
+        and coalesce(existing.user_id, existing."userId") is not distinct from l.recipient_id
+        and lower(coalesce(existing.type, '')) = 'level_completed'
+        and existing.completed_level_start is not distinct from l.completed_level
+        and existing.completed_level_end is not distinct from l.completed_level
+    )
+  );
+
 delete from public.notifications n
 where lower(coalesce(n.type, '')) in ('level_completed', 'level_up')
   and coalesce(n.message, '') ~* '^[[:space:]]*Milford[[:space:]]+Music[[:space:]]+';
+
+delete from public.notifications n
+where lower(coalesce(n.type, '')) in ('level_completed', 'level_up')
+  and (
+    coalesce(n.message, '') ~* '(advanced[[:space:]]+to|reached[[:space:]]+Level|Level[[:space:]]+Level)'
+    or extract(year from n.created_at) < 2024
+    or extract(year from n.created_at) > extract(year from now()) + 1
+  );
+
+create or replace function public.find_bad_level_notifications(
+  p_studio_id uuid default null
+)
+returns table (
+  id bigint,
+  studio_id uuid,
+  user_id uuid,
+  created_at timestamptz,
+  type text,
+  message text,
+  reason text
+)
+language sql
+stable
+set search_path = public
+as $$
+  select
+    n.id,
+    n.studio_id,
+    coalesce(n.user_id, n."userId") as user_id,
+    n.created_at,
+    n.type,
+    n.message,
+    concat_ws(
+      ', ',
+      case when coalesce(n.message, '') ~* 'advanced[[:space:]]+to' then 'advanced' end,
+      case when coalesce(n.message, '') ~* 'reached[[:space:]]+Level' then 'reached' end,
+      case when coalesce(n.message, '') ~* 'Level[[:space:]]+Level' then 'Level Level' end,
+      case when extract(year from n.created_at) < 2024 then 'year < 2024' end,
+      case when extract(year from n.created_at) > extract(year from now()) + 1 then 'future year' end
+    ) as reason
+  from public.notifications n
+  where (p_studio_id is null or n.studio_id = p_studio_id)
+    and lower(coalesce(n.type, '')) in ('level_completed', 'level_up')
+    and (
+      coalesce(n.message, '') ~* '(advanced[[:space:]]+to|reached[[:space:]]+Level|Level[[:space:]]+Level)'
+      or extract(year from n.created_at) < 2024
+      or extract(year from n.created_at) > extract(year from now()) + 1
+    )
+  order by n.created_at desc, n.id;
+$$;
+
+revoke all on function public.find_bad_level_notifications(uuid) from public;
+grant execute on function public.find_bad_level_notifications(uuid) to authenticated;

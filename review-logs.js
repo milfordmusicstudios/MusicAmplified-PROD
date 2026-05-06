@@ -1263,6 +1263,24 @@ const isLevelUpNotification = (row) => {
   return message.includes("reached level") || message.includes("advanced to level") || message.includes("completed level");
 };
 
+const getNotificationRawMessage = (row) => `${row?.title || ""} ${row?.message || row?.body || ""}`.trim();
+
+const hasLegacyLevelNotificationLanguage = (row) => {
+  if (!isLevelUpNotification(row)) return false;
+  const raw = getNotificationRawMessage(row).toLowerCase();
+  return raw.includes("advanced to") ||
+    /\breached\s+level\b/i.test(raw) ||
+    raw.includes("level level");
+};
+
+const hasInvalidLevelNotificationTimestamp = (row) => {
+  if (!isLevelUpNotification(row)) return false;
+  const date = new Date(row?.created_at || "");
+  if (Number.isNaN(date.getTime())) return true;
+  const year = date.getFullYear();
+  return year < 2024 || year > new Date().getFullYear() + 1;
+};
+
 const isNotificationRead = (row) => {
   if (!row) return false;
   return row?.read === true;
@@ -1323,6 +1341,10 @@ const getNotificationStudentName = (row) => {
 };
 const isRecognitionTestAccountNotification = (row) =>
   isLevelUpNotification(row) && getNotificationStudentName(row).toLowerCase() === "milford music";
+const shouldHideRecognitionNotification = (row) =>
+  isRecognitionTestAccountNotification(row) ||
+  hasLegacyLevelNotificationLanguage(row) ||
+  hasInvalidLevelNotificationTimestamp(row);
 const getNotificationDedupeKey = (row) => {
   const type = getCanonicalNotificationType(row);
   const levelNumber = getNotificationLevelNumber(row);
@@ -1619,6 +1641,27 @@ async function fetchViewerNotifications(limit = NOTIFICATION_FETCH_ADMIN_CAP) {
   return { data: [], error: errors[0]?.error || null };
 }
 
+window.AA_checkLevelNotificationCleanup = async () => {
+  const { data, error } = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
+  if (error) throw error;
+  const badRows = (Array.isArray(data) ? data : []).filter((row) =>
+    isLevelUpNotification(row) &&
+    (hasLegacyLevelNotificationLanguage(row) || hasInvalidLevelNotificationTimestamp(row))
+  );
+  const report = badRows.map((row) => ({
+    id: row?.id || "",
+    created_at: row?.created_at || "",
+    type: row?.type || "",
+    message: row?.message || "",
+    reasons: [
+      hasLegacyLevelNotificationLanguage(row) ? "legacy language" : "",
+      hasInvalidLevelNotificationTimestamp(row) ? "invalid timestamp" : ""
+    ].filter(Boolean).join(", ")
+  }));
+  console.table(report);
+  return report;
+};
+
 async function updateNotificationsButtonState() {
   if (!showNotificationsBtn) return;
   const { data, error } = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
@@ -1630,14 +1673,17 @@ async function updateNotificationsButtonState() {
   const viewerUserId = String(viewerContext?.viewerUserId || "").trim();
   const unresolvedLevelUpCount = data.filter((row) => {
     const rowUserId = String(row?.user_id || row?.userId || "").trim();
-    return rowUserId === viewerUserId && isLevelUpNotification(row) && !isNotificationRead(row);
+    return rowUserId === viewerUserId &&
+      isLevelUpNotification(row) &&
+      !shouldHideRecognitionNotification(row) &&
+      !isNotificationRead(row);
   }).length;
   console.log("[NotifDiag][review-logs.js][updateNotificationsButtonState] unread logic", {
     source: "review-logs.js::updateNotificationsButtonState",
     queriedUserId: viewerContext.viewerUserId,
     queriedStudioId: viewerContext?.studioId || null,
     totalNotifications: Array.isArray(data) ? data.length : 0,
-    unreadReadFilterLogic: "isLevelUpNotification(row) && row.read !== true",
+    unreadReadFilterLogic: "visible level-completion notification && row.read !== true",
     unresolvedLevelUpCount
   });
   showNotificationsBtn.classList.toggle("has-alert", unresolvedLevelUpCount > 0);
@@ -1687,7 +1733,7 @@ function applyNotificationFiltersAndSort(rows) {
   }).filter(Boolean);
   const keyword = notificationFilters.keyword.toLowerCase();
   const filtered = (Array.isArray(rows) ? rows : []).filter((row) => {
-    if (isRecognitionTestAccountNotification(row)) return false;
+    if (shouldHideRecognitionNotification(row)) return false;
     const dateOnly = getDateOnlyString(row?.created_at);
     const text = getNotificationText(row).toLowerCase();
     const userId = getNotificationUserId(row);

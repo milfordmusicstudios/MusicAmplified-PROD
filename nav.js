@@ -181,6 +181,21 @@ function isLevelUpNotification(row) {
   return message.includes("reached level") || message.includes("advanced to level") || message.includes("completed level");
 }
 
+function shouldIgnoreLevelNotification(row) {
+  if (!isLevelUpNotification(row)) return false;
+  const raw = `${row?.title || ""} ${row?.message || row?.body || ""}`.toLowerCase();
+  if (raw.includes("advanced to") || /\breached\s+level\b/i.test(raw) || raw.includes("level level")) {
+    return true;
+  }
+  if (/^\s*milford\s+music\s+/i.test(String(row?.message || ""))) {
+    return true;
+  }
+  const date = new Date(row?.created_at || "");
+  if (Number.isNaN(date.getTime())) return true;
+  const year = date.getFullYear();
+  return year < 2024 || year > new Date().getFullYear() + 1;
+}
+
 function isNotificationRead(row) {
   if (!row) return false;
   return row.read === true;
@@ -268,12 +283,16 @@ async function hasStaffUnreadLevelUpNotifications(ctx) {
     return false;
   }
   const rows = mergeNotificationRows(rowSets, limit);
-  const unreadLevelUpCount = rows.filter((row) => isLevelUpNotification(row) && !isNotificationRead(row)).length;
+  const unreadLevelUpCount = rows.filter((row) =>
+    isLevelUpNotification(row) &&
+    !shouldIgnoreLevelNotification(row) &&
+    !isNotificationRead(row)
+  ).length;
   console.log("[NotifDiag][nav.js][hasStaffUnreadLevelUpNotifications] query result", {
     source: "nav.js::hasStaffUnreadLevelUpNotifications",
     queriedUserId: viewerUserId,
     queriedStudioId: activeStudioId || null,
-    unreadReadFilterLogic: "isLevelUpNotification(row) && row.read !== true",
+    unreadReadFilterLogic: "visible level-completion notification && row.read !== true",
     totalCount: rows.length,
     unreadLevelUpCount,
     errorCount: errors.length,
