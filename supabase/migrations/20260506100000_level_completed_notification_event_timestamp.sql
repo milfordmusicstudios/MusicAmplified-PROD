@@ -47,9 +47,9 @@ begin
       l.id as log_id,
       coalesce(l.points, 0)::integer as points,
       coalesce(
-        nullif(to_jsonb(l)->>'approved_at', '')::timestamptz,
         l.date::timestamp at time zone 'UTC',
         nullif(to_jsonb(l)->>'created_at', '')::timestamptz,
+        nullif(to_jsonb(l)->>'approved_at', '')::timestamptz,
         now()
       ) as event_at
     from public.logs l

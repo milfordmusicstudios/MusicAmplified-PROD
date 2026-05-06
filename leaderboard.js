@@ -116,21 +116,6 @@ function renderLevelBars(container, levelsDesc) {
 
 async function fetchStudentIds(studioId) {
   try {
-    const { data, error } = await supabase.rpc("get_leaderboard_students", {
-      p_studio_id: studioId
-    });
-    if (error) throw error;
-    const ids = (Array.isArray(data) ? data : [])
-      .filter(isActiveLeaderboardStudent)
-      .map((row) => row?.id)
-      .filter(Boolean);
-    window.__LEADERBOARD_RPC_STUDENTS__ = data;
-    return ids;
-  } catch (err) {
-    console.warn("[Leaderboard] get_leaderboard_students fallback", err);
-  }
-
-  try {
     const { data, error } = await supabase
       .from("studio_members")
       .select("user_id, roles")
@@ -157,11 +142,6 @@ async function fetchStudentIds(studioId) {
 
 async function fetchStudentsByIds(ids, studioId) {
   if (!ids.length) return [];
-  if (Array.isArray(window.__LEADERBOARD_RPC_STUDENTS__)) {
-    return window.__LEADERBOARD_RPC_STUDENTS__.filter((row) =>
-      ids.some((id) => String(id) === String(row?.id)) && isActiveLeaderboardStudent(row)
-    );
-  }
   const { data, error } = await supabase
     .from("users")
     .select("id, firstName, lastName, avatarUrl, roles, points, level, active, deactivated_at, showonleaderboard")
@@ -191,7 +171,7 @@ async function fetchStudentsByIds(ids, studioId) {
 function isActiveLeaderboardStudent(student) {
   if (!student) return false;
   if (student.deactivated_at) return false;
-  if (student.active === false) return false;
+  if (student.active !== true) return false;
   if (student.showonleaderboard === false) return false;
   return true;
 }

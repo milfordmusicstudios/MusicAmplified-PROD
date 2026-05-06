@@ -1610,7 +1610,11 @@ async function updateNotificationsButtonState() {
     showNotificationsBtn.classList.remove("has-alert");
     return;
   }
-  const unresolvedLevelUpCount = data.filter((row) => isLevelUpNotification(row) && !isNotificationRead(row)).length;
+  const viewerUserId = String(viewerContext?.viewerUserId || "").trim();
+  const unresolvedLevelUpCount = data.filter((row) => {
+    const rowUserId = String(row?.user_id || row?.userId || "").trim();
+    return rowUserId === viewerUserId && isLevelUpNotification(row) && !isNotificationRead(row);
+  }).length;
   console.log("[NotifDiag][review-logs.js][updateNotificationsButtonState] unread logic", {
     source: "review-logs.js::updateNotificationsButtonState",
     queriedUserId: viewerContext.viewerUserId,
