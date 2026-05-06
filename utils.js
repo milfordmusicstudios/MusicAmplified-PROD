@@ -921,6 +921,13 @@ export async function createLevelCompletedNotification({
   const range = completedLevelStart && completedLevelEnd
     ? { start: Number(completedLevelStart), end: Number(completedLevelEnd) }
     : getCompletedLevelRange(previousLevel, newLevel);
+  console.log("[LevelCompleted] threshold check", {
+    studentUserId: String(studentUserId || "").trim() || null,
+    studioId: String(studioId || "").trim() || null,
+    oldLevel: Number(previousLevel || 0),
+    newLevel: Number(newLevel || 0),
+    completedLevelsToNotify: range ? { start: range.start, end: range.end } : []
+  });
   if (!studentUserId || !range) return { ok: true, skipped: true };
 
   try {
@@ -1104,11 +1111,15 @@ export async function recalculateUserPoints(userId, options = {}) {
     }
     const newLevel = Number(currentLevel?.id || 0);
     const didLevelUp = newLevel > Number(previousLevel || 0);
+    const completedLevelsToNotify = getCompletedLevelRange(previousLevel, newLevel);
     console.log("[LevelUpDiag][utils.js][recalculateUserPoints] level-check", {
       studentUserId: String(userId || "").trim() || null,
       studioId: String(userBefore?.studio_id || localStorage.getItem("activeStudioId") || "").trim() || null,
-      previousLevel: Number(previousLevel || 0),
+      oldLevel: Number(previousLevel || 0),
       newLevel,
+      completedLevelsToNotify: completedLevelsToNotify
+        ? { start: completedLevelsToNotify.start, end: completedLevelsToNotify.end }
+        : [],
       didLevelUp
     });
 

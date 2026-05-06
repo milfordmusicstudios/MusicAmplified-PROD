@@ -34,7 +34,8 @@
 
     <div class="filter-toolbar">
       <div class="filter-left">
-        <input id="searchInput" type="text" placeholder="Search logs...">
+        <input id="searchInput" type="text" placeholder="Search notes...">
+        <button id="filterLogsBtn" class="blue-button" type="button">Filter Logs</button>
       </div>
       <div class="filter-right">
         <div class="view-toggle">
@@ -44,6 +45,7 @@
         <button id="quickAddBtn" class="blue-button">Quick Add</button>
       </div>
     </div>
+    <div id="activeFiltersSummary" class="active-filters-summary" style="display:none;"></div>
 
     <div id="notificationsSection" class="notifications-panel" style="display:none;"></div>
 
@@ -161,6 +163,57 @@
       </div>
     </div>
 
+    <div id="filterLogsModal" class="filter-logs-modal-overlay" style="display:none;">
+      <div class="filter-logs-modal-shell" role="dialog" aria-modal="true" aria-labelledby="filterLogsTitle">
+        <div class="filter-logs-modal-header">
+          <h3 id="filterLogsTitle">Filter Logs</h3>
+          <button id="filterLogsClose" class="modal-close" type="button" aria-label="Close filter logs modal">&times;</button>
+        </div>
+        <div class="filter-logs-modal-body">
+          <label for="filterStudent">Student</label>
+          <select id="filterStudent" class="white-input">
+            <option value="">Any student</option>
+          </select>
+
+          <div class="filter-logs-date-grid">
+            <label for="filterDateFrom">
+              From
+              <input id="filterDateFrom" class="white-input" type="date">
+            </label>
+            <label for="filterDateTo">
+              To
+              <input id="filterDateTo" class="white-input" type="date">
+            </label>
+          </div>
+
+          <label for="filterKeyword">Keyword</label>
+          <input id="filterKeyword" class="white-input" type="text" placeholder="Search notes...">
+
+          <label for="filterCategory">Category</label>
+          <select id="filterCategory" class="white-input">
+            <option value="">Any category</option>
+            <option value="practice">Practice</option>
+            <option value="participation">Participation</option>
+            <option value="performance">Performance</option>
+            <option value="personal">Personal</option>
+            <option value="proficiency">Proficiency</option>
+          </select>
+
+          <label for="filterStatus">Status</label>
+          <select id="filterStatus" class="white-input">
+            <option value="">Any status</option>
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="needs info">Needs Info</option>
+          </select>
+        </div>
+        <div class="filter-logs-modal-actions">
+          <button id="applyLogFiltersBtn" class="blue-button" type="button">Apply Filters</button>
+          <button id="resetLogFiltersBtn" class="blue-button" type="button">Reset Filters</button>
+        </div>
+      </div>
+    </div>
+
   </main>
   </div>
 
@@ -172,7 +225,7 @@
   <script type="module" src="studio-routing.js"></script>
   <script type="module" src="nav.js"></script>
 
-  <script type="module" src="review-logs.js?v=20260505-3"></script>
+  <script type="module" src="review-logs.js?v=20260505-4"></script>
   <script type="module" src="pwa-install.js"></script>
 </body>
 </html>

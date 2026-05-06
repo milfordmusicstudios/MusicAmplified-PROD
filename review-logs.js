@@ -193,6 +193,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   const logsTableBody = document.getElementById("logsTableBody");
   const categorySummary = document.getElementById("categorySummary");
   const searchInput = document.getElementById("searchInput");
+  const filterLogsBtn = document.getElementById("filterLogsBtn");
+  const filterLogsModal = document.getElementById("filterLogsModal");
+  const filterLogsClose = document.getElementById("filterLogsClose");
+  const filterStudent = document.getElementById("filterStudent");
+  const filterDateFrom = document.getElementById("filterDateFrom");
+  const filterDateTo = document.getElementById("filterDateTo");
+  const filterKeyword = document.getElementById("filterKeyword");
+  const filterCategory = document.getElementById("filterCategory");
+  const filterStatus = document.getElementById("filterStatus");
+  const applyLogFiltersBtn = document.getElementById("applyLogFiltersBtn");
+  const resetLogFiltersBtn = document.getElementById("resetLogFiltersBtn");
+  const activeFiltersSummary = document.getElementById("activeFiltersSummary");
   const bulkActionBar = document.getElementById("bulkActionBar");
 
   let allLogs = [];
@@ -202,7 +214,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   let currentPage = 1;
   let logsPerPage = 25;
   let activeCardFilter = "all";
+  let serverLogFilters = {
+    studentId: "",
+    dateFrom: "",
+    dateTo: "",
+    keyword: "",
+    category: "",
+    status: ""
+  };
   let pendingCardFlashPlayed = false;
+  const LOG_FETCH_PAGE_SIZE = 1000;
+  const LOG_FETCH_ADMIN_CAP = 20000;
   const requestedFilter = new URLSearchParams(window.location.search).get("filter");
   const normalizedRequestedFilter = requestedFilter === "needs-approval" ? "pending" : requestedFilter;
   if (normalizedRequestedFilter === "pending" || normalizedRequestedFilter === "approved-today" || normalizedRequestedFilter === "needs info" || normalizedRequestedFilter === "all") {
@@ -388,15 +410,129 @@ document.addEventListener("DOMContentLoaded", async () => {
     return true;
   };
 
-  try {
-    hideReviewLogsError();
-    const { data: logsData, error: logsError } = await supabase
+  const normalizeFilterValue = (value) => String(value || "").trim();
+  const hasServerFilters = () => Boolean(
+    serverLogFilters.studentId ||
+    serverLogFilters.dateFrom ||
+    serverLogFilters.dateTo ||
+    serverLogFilters.keyword ||
+    serverLogFilters.category ||
+    serverLogFilters.status
+  );
+  const getVisibleStudents = () => {
+    if (!viewerContext.isTeacher || viewerContext.isAdmin) return users;
+    return users.filter(u => Array.isArray(u.teacherIds) && u.teacherIds.map(String).includes(String(viewerContext.viewerUserId)));
+  };
+  const populateFilterStudentOptions = () => {
+    if (!(filterStudent instanceof HTMLSelectElement)) return;
+    const selected = filterStudent.value;
+    const visibleStudents = getVisibleStudents()
+      .slice()
+      .sort((a, b) => {
+        const aName = `${a.firstName || ""} ${a.lastName || ""}`.trim().toLowerCase();
+        const bName = `${b.firstName || ""} ${b.lastName || ""}`.trim().toLowerCase();
+        return aName.localeCompare(bName);
+      });
+    filterStudent.innerHTML = `<option value="">Any student</option>`;
+    visibleStudents.forEach((student) => {
+      const option = document.createElement("option");
+      option.value = String(student.id || "");
+      option.textContent = `${student.firstName || ""} ${student.lastName || ""}`.trim() || student.email || "Unnamed student";
+      filterStudent.appendChild(option);
+    });
+    filterStudent.value = selected;
+  };
+  const syncFilterModalFields = () => {
+    if (filterStudent instanceof HTMLSelectElement) filterStudent.value = serverLogFilters.studentId;
+    if (filterDateFrom instanceof HTMLInputElement) filterDateFrom.value = serverLogFilters.dateFrom;
+    if (filterDateTo instanceof HTMLInputElement) filterDateTo.value = serverLogFilters.dateTo;
+    if (filterKeyword instanceof HTMLInputElement) filterKeyword.value = serverLogFilters.keyword;
+    if (filterCategory instanceof HTMLSelectElement) filterCategory.value = serverLogFilters.category;
+    if (filterStatus instanceof HTMLSelectElement) filterStatus.value = serverLogFilters.status;
+  };
+  const collectFilterModalFields = () => ({
+    studentId: normalizeFilterValue(filterStudent?.value),
+    dateFrom: getDateOnlyString(filterDateFrom?.value),
+    dateTo: getDateOnlyString(filterDateTo?.value),
+    keyword: normalizeFilterValue(filterKeyword?.value),
+    category: normalizeFilterValue(filterCategory?.value).toLowerCase(),
+    status: normalizeFilterValue(filterStatus?.value).toLowerCase()
+  });
+  const getStudentNameById = (studentId) => {
+    const row = users.find(u => String(u.id) === String(studentId));
+    return row ? `${row.firstName || ""} ${row.lastName || ""}`.trim() : "";
+  };
+  const renderActiveFiltersSummary = () => {
+    if (!activeFiltersSummary) return;
+    const parts = [];
+    if (serverLogFilters.studentId) parts.push(getStudentNameById(serverLogFilters.studentId) || "Selected student");
+    if (serverLogFilters.category) parts.push(serverLogFilters.category.replace(/\b\w/g, c => c.toUpperCase()));
+    if (serverLogFilters.status) parts.push(serverLogFilters.status.replace(/\b\w/g, c => c.toUpperCase()));
+    if (serverLogFilters.dateFrom || serverLogFilters.dateTo) {
+      const fromLabel = serverLogFilters.dateFrom ? formatDateOnlyForDisplay(serverLogFilters.dateFrom, { month: "short", day: "numeric" }) : "Start";
+      const toLabel = serverLogFilters.dateTo ? formatDateOnlyForDisplay(serverLogFilters.dateTo, { month: "short", day: "numeric" }) : "Today";
+      parts.push(`${fromLabel}-${toLabel}`);
+    }
+    if (serverLogFilters.keyword) parts.push(`"${serverLogFilters.keyword}"`);
+    const quickKeyword = normalizeFilterValue(searchInput?.value);
+    if (quickKeyword) parts.push(`Quick: "${quickKeyword}"`);
+    if (!parts.length) {
+      activeFiltersSummary.textContent = "";
+      activeFiltersSummary.style.display = "none";
+      return;
+    }
+    activeFiltersSummary.textContent = `Filtered by: ${parts.join(", ")}`;
+    activeFiltersSummary.style.display = "block";
+  };
+  const fetchLogsPage = async ({ from, to, teacherStudentIds }) => {
+    console.log("[ReviewLogs] requesting logs range", {
+      from,
+      to,
+      filtersActive: hasServerFilters(),
+      filters: serverLogFilters
+    });
+    let query = supabase
       .from("logs")
       .select("*")
       .eq("studio_id", viewerContext.studioId)
-      .order("date", { ascending: false, nulls: "last" });
-    if (logsError) throw logsError;
-
+      .order("date", { ascending: false, nulls: "last" })
+      .range(from, to);
+    if (serverLogFilters.dateFrom) query = query.gte("date", serverLogFilters.dateFrom);
+    if (serverLogFilters.dateTo) query = query.lte("date", serverLogFilters.dateTo);
+    if (serverLogFilters.studentId) {
+      query = query.eq("userId", serverLogFilters.studentId);
+    } else if (Array.isArray(teacherStudentIds)) {
+      if (!teacherStudentIds.length) return { data: [], error: null };
+      query = query.in("userId", teacherStudentIds);
+    }
+    if (serverLogFilters.category) query = query.eq("category", serverLogFilters.category);
+    if (serverLogFilters.status) query = query.eq("status", serverLogFilters.status);
+    return query;
+  };
+  const fetchLogsPaginated = async () => {
+    const teacherStudentIds = viewerContext.isTeacher && !viewerContext.isAdmin
+      ? getVisibleStudents().map(s => String(s.id)).filter(Boolean)
+      : null;
+    const rows = [];
+    for (let from = 0; from < LOG_FETCH_ADMIN_CAP; from += LOG_FETCH_PAGE_SIZE) {
+      const to = Math.min(from + LOG_FETCH_PAGE_SIZE - 1, LOG_FETCH_ADMIN_CAP - 1);
+      const { data, error } = await fetchLogsPage({ from, to, teacherStudentIds });
+      if (error) throw error;
+      const batch = Array.isArray(data) ? data : [];
+      rows.push(...batch);
+      if (batch.length < LOG_FETCH_PAGE_SIZE) break;
+    }
+    console.log("[ReviewLogs] fetched logs", {
+      fetchedCount: rows.length,
+      filtersActive: hasServerFilters(),
+      cap: LOG_FETCH_ADMIN_CAP,
+      hitCap: rows.length >= LOG_FETCH_ADMIN_CAP
+    });
+    return rows;
+  };
+  const loadReviewLogs = async () => {
+    hideReviewLogsError();
+    logsTableBody.innerHTML = `<tr><td colspan="7" class="logs-empty-state">Loading logs...</td></tr>`;
     const { data: usersData, error: usersError } = await supabase
       .from("users")
       .select("id, firstName, lastName, teacherIds")
@@ -404,6 +540,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (usersError) throw usersError;
 
     users = usersData || [];
+    populateFilterStudentOptions();
+    const logsData = await fetchLogsPaginated();
     allLogs = (logsData || []).map(l => ({
       ...l,
       fullName:
@@ -412,15 +550,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         (users.find(u => String(u.id) === String(l.userId))?.lastName || "")
     }));
 
-    if (viewerContext.isTeacher && !viewerContext.isAdmin) {
-      const myStudents = users
-        .filter(u => Array.isArray(u.teacherIds) && u.teacherIds.map(String).includes(String(viewerContext.viewerUserId)))
-        .map(s => String(s.id));
-      allLogs = allLogs.filter(l => myStudents.includes(String(l.userId)));
-    }
-
     hideReviewLogsError();
     applyFilters();
+  };
+
+  try {
+    await loadReviewLogs();
   } catch (err) {
     console.error("[ERROR] Review Logs:", err);
     showReviewLogsError("Failed to load logs.", err);
@@ -428,16 +563,67 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Search + Card Filter
   searchInput.addEventListener("input", applyFilters);
+  const openFilterLogsModal = () => {
+    populateFilterStudentOptions();
+    syncFilterModalFields();
+    if (filterLogsModal) filterLogsModal.style.display = "flex";
+  };
+  const closeFilterLogsModal = () => {
+    if (filterLogsModal) filterLogsModal.style.display = "none";
+  };
+  filterLogsBtn?.addEventListener("click", openFilterLogsModal);
+  filterLogsClose?.addEventListener("click", closeFilterLogsModal);
+  filterLogsModal?.addEventListener("click", (event) => {
+    if (event.target === filterLogsModal) closeFilterLogsModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && filterLogsModal?.style.display !== "none") closeFilterLogsModal();
+  });
+  applyLogFiltersBtn?.addEventListener("click", async () => {
+    serverLogFilters = collectFilterModalFields();
+    closeFilterLogsModal();
+    currentPage = 1;
+    try {
+      await loadReviewLogs();
+    } catch (err) {
+      console.error("[ReviewLogs] filtered load failed", err);
+      showReviewLogsError("Failed to load filtered logs.", err);
+    }
+  });
+  resetLogFiltersBtn?.addEventListener("click", async () => {
+    serverLogFilters = {
+      studentId: "",
+      dateFrom: "",
+      dateTo: "",
+      keyword: "",
+      category: "",
+      status: ""
+    };
+    syncFilterModalFields();
+    currentPage = 1;
+    try {
+      await loadReviewLogs();
+    } catch (err) {
+      console.error("[ReviewLogs] reset filtered load failed", err);
+      showReviewLogsError("Failed to reload logs.", err);
+    }
+  });
 
   function applyFilters() {
-    const searchVal = searchInput.value.toLowerCase();
+    const quickKeyword = normalizeFilterValue(searchInput.value).toLowerCase();
+    const modalKeyword = normalizeFilterValue(serverLogFilters.keyword).toLowerCase();
     const todayStr = todayString();
 
     filteredLogs = allLogs.filter(l => {
-      const matchesSearch =
-        l.fullName.toLowerCase().includes(searchVal) ||
-        (l.notes || "").toLowerCase().includes(searchVal) ||
-        (l.category || "").toLowerCase().includes(searchVal);
+      const notesText = String(l.notes || "").toLowerCase();
+      const matchesQuickSearch = !quickKeyword || notesText.includes(quickKeyword);
+      const matchesModalKeyword = !modalKeyword || notesText.includes(modalKeyword);
+      const logDate = getDateOnlyString(l.date);
+      const matchesStudent = !serverLogFilters.studentId || String(l.userId) === String(serverLogFilters.studentId);
+      const matchesDateFrom = !serverLogFilters.dateFrom || (logDate && logDate >= serverLogFilters.dateFrom);
+      const matchesDateTo = !serverLogFilters.dateTo || (logDate && logDate <= serverLogFilters.dateTo);
+      const matchesCategory = !serverLogFilters.category || String(l.category || "").toLowerCase() === serverLogFilters.category;
+      const matchesStatusFilter = !serverLogFilters.status || String(l.status || "").toLowerCase() === serverLogFilters.status;
       let matchesCard = true;
       if (activeCardFilter === "pending") {
         matchesCard = String(l.status || "").toLowerCase() === "pending";
@@ -446,12 +632,28 @@ document.addEventListener("DOMContentLoaded", async () => {
       } else if (activeCardFilter === "needs info") {
         matchesCard = String(l.status || "").toLowerCase() === "needs info";
       }
-      return matchesSearch && matchesCard;
+      return matchesQuickSearch &&
+        matchesModalKeyword &&
+        matchesStudent &&
+        matchesDateFrom &&
+        matchesDateTo &&
+        matchesCategory &&
+        matchesStatusFilter &&
+        matchesCard;
     });
 
     currentPage = 1;
     sortLogs();
     renderCategorySummary(allLogs);
+    renderActiveFiltersSummary();
+    console.log("[ReviewLogs] filters applied", {
+      loadedCount: allLogs.length,
+      filteredCount: filteredLogs.length,
+      filtersActive: hasServerFilters() || Boolean(quickKeyword) || activeCardFilter !== "all",
+      serverFilters: serverLogFilters,
+      quickKeywordActive: Boolean(quickKeyword),
+      cardFilter: activeCardFilter
+    });
     renderLogsTable(filteredLogs);
   }
 
@@ -569,7 +771,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   function renderLogsTable(list) {
     logsTableBody.innerHTML = "";
     if (!allLogs.length) {
-      logsTableBody.innerHTML = `<tr><td colspan="7" class="logs-empty-state">No logs found yet.</td></tr>`;
+      const hasAnyFilter = hasServerFilters() || Boolean(normalizeFilterValue(searchInput?.value)) || activeCardFilter !== "all";
+      logsTableBody.innerHTML = `<tr><td colspan="7" class="logs-empty-state">${hasAnyFilter ? "No logs match the active filters." : "No logs found yet."}</td></tr>`;
+      document.getElementById("selectAll").checked = false;
+      updateBulkActionBarVisibility();
+      return;
+    }
+    if (!list.length) {
+      logsTableBody.innerHTML = `<tr><td colspan="7" class="logs-empty-state">No logs match the active filters.</td></tr>`;
       document.getElementById("selectAll").checked = false;
       updateBulkActionBarVisibility();
       return;
@@ -745,8 +954,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       const { data: deletedRows, error } = await supabase.rpc("delete_logs_for_studio", {
-        p_studio_id: viewerContext.studioId,
-        p_log_ids: numericSelectedIds
+        p_log_ids: numericSelectedIds,
+        p_studio_id: viewerContext.studioId
       });
       console.log("[DELETE RESULT]", { selectedIds, numericSelectedIds, deletedRows, error });
       if (error) {
@@ -764,7 +973,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       const deletedUserIds = Array.from(new Set(
         (deletedRows || [])
-          .map(row => String(row.userId || "").trim())
+          .flatMap(row => [
+            row?.userId,
+            row?.user_id,
+            ...(Array.isArray(row?.affected_user_ids) ? row.affected_user_ids : [])
+          ])
+          .map(userId => String(userId || "").trim())
           .filter(Boolean)
       ));
       if (deletedUserIds.length) {

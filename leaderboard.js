@@ -3,6 +3,9 @@ import { ensureStudioContextAndRoute } from "./studio-routing.js";
 
 const OFFSETS = [0, 14, -14, 28, -28];
 const PAD_X = 28;
+const DEFAULT_AVATAR_SRC = "images/icons/default.png";
+const FALLBACK_AVATAR_SRC = "images/icons/default.png";
+const brokenAvatarUrls = new Set();
 
 document.addEventListener("DOMContentLoaded", async () => {
   const routeResult = await ensureStudioContextAndRoute({ redirectHome: false });
@@ -64,6 +67,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const activeStudentId = localStorage.getItem("aa.activeStudentId") || null;
     const placements = buildPlacements(students, totals, levels, activeStudentId);
     renderAvatars(placements);
+    initLeaderboardZoom(placements);
 
     const reposition = debounce(() => positionAvatars(placements), 150);
     window.addEventListener("resize", reposition);
@@ -193,7 +197,8 @@ function renderAvatars(placements) {
 
     const avatar = document.createElement("img");
     avatar.className = `lb-avatar leaderboard-avatar${p.isSelf ? " is-self" : ""}`;
-    avatar.src = p.student.avatarUrl || "images/icons/default.png";
+    const avatarUrl = getValidAvatarUrl(p.student.avatarUrl);
+    avatar.src = avatarUrl || DEFAULT_AVATAR_SRC;
     const fullName = `${p.student.firstName ?? ""} ${p.student.lastName ?? ""}`.trim() || "Student";
     avatar.alt = fullName;
     avatar.title = `${fullName} — ${p.total} pts`;
@@ -202,6 +207,8 @@ function renderAvatars(placements) {
     avatar.dataset.offset = String(p.offset);
     avatar.dataset.points = String(p.total);
     avatar.dataset.name = fullName;
+    avatar.dataset.avatarUrl = avatarUrl || "";
+    avatar.addEventListener("error", () => handleBrokenAvatar(avatar, p.student, fullName), { once: true });
 
     avatar.style.left = `${PAD_X}px`;
     avatar.style.top = `calc(50% + ${p.offset}px)`;
@@ -212,6 +219,92 @@ function renderAvatars(placements) {
   });
 
   requestAnimationFrame(() => positionAvatars(placements));
+}
+
+function getValidAvatarUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "null" || raw === "undefined") return "";
+  try {
+    const parsed = new URL(raw, window.location.href);
+    if (!["http:", "https:", "data:", "blob:"].includes(parsed.protocol)) {
+      console.warn("[Leaderboard] blocked avatar URL protocol", { avatarUrl: raw });
+      return "";
+    }
+    return parsed.href;
+  } catch (error) {
+    console.warn("[Leaderboard] invalid avatar URL", { avatarUrl: raw, error });
+    return "";
+  }
+}
+
+function handleBrokenAvatar(avatar, student, fullName) {
+  const brokenUrl = avatar.dataset.avatarUrl || avatar.currentSrc || avatar.src || "";
+  if (brokenUrl && brokenUrl !== FALLBACK_AVATAR_SRC && !brokenAvatarUrls.has(brokenUrl)) {
+    brokenAvatarUrls.add(brokenUrl);
+    console.warn("[Leaderboard] broken avatar URL", {
+      studentId: student?.id || null,
+      name: fullName,
+      avatarUrl: brokenUrl
+    });
+  }
+  if (!avatar.src.endsWith(FALLBACK_AVATAR_SRC)) {
+    avatar.src = FALLBACK_AVATAR_SRC;
+  }
+}
+
+function initLeaderboardZoom(placements) {
+  const slider = document.getElementById("leaderboardZoom");
+  const output = document.getElementById("leaderboardZoomValue");
+  const bars = document.getElementById("leaderboardBars");
+  const wrapper = document.querySelector(".leaderboard-scroll-wrapper");
+  if (!bars) return;
+
+  let zoom = slider ? Number(slider.value || 1) : 1;
+  let pinchStartDistance = 0;
+  let pinchStartZoom = zoom;
+
+  const applyZoom = (nextZoom) => {
+    zoom = Math.max(1, Math.min(4, Number(nextZoom) || 1));
+    bars.style.setProperty("--leaderboard-width", `${Math.round(zoom * 100)}%`);
+    bars.style.setProperty("--leaderboard-avatar-size", `${Math.round(44 + (zoom - 1) * 4)}px`);
+    if (slider) slider.value = String(zoom);
+    if (output) output.textContent = `${zoom.toFixed(zoom % 1 ? 2 : 0).replace(/\.00$/, "")}x`;
+    console.log("[Leaderboard] zoom changed", { zoom, mode: "layout-width" });
+    requestAnimationFrame(() => positionAvatars(placements));
+  };
+
+  if (slider) {
+    slider.addEventListener("input", () => applyZoom(slider.value));
+  }
+
+  if (wrapper) {
+    wrapper.addEventListener("wheel", (event) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      applyZoom(zoom + (event.deltaY < 0 ? 0.25 : -0.25));
+    }, { passive: false });
+
+    wrapper.addEventListener("touchstart", (event) => {
+      if (event.touches.length !== 2) return;
+      pinchStartDistance = getTouchDistance(event.touches);
+      pinchStartZoom = zoom;
+    }, { passive: true });
+
+    wrapper.addEventListener("touchmove", (event) => {
+      if (event.touches.length !== 2 || !pinchStartDistance) return;
+      event.preventDefault();
+      const ratio = getTouchDistance(event.touches) / pinchStartDistance;
+      applyZoom(pinchStartZoom * ratio);
+    }, { passive: false });
+  }
+
+  applyZoom(zoom);
+}
+
+function getTouchDistance(touches) {
+  const [a, b] = touches;
+  if (!a || !b) return 0;
+  return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
 }
 
 function positionAvatars(placements) {
