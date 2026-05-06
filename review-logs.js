@@ -1692,6 +1692,9 @@ function applyNotificationFiltersAndSort(rows) {
     if (notificationFilters.sort === "level_low_high") {
       return getNotificationLevelNumber(a) - getNotificationLevelNumber(b);
     }
+    if (notificationFilters.sort === "level_high_low") {
+      return getNotificationLevelNumber(b) - getNotificationLevelNumber(a);
+    }
     if (notificationFilters.sort === "recognition_not_given") {
       return Number(isRecognitionGiven(a)) - Number(isRecognitionGiven(b)) ||
         (new Date(b?.created_at || 0).getTime() - new Date(a?.created_at || 0).getTime());
@@ -1885,7 +1888,10 @@ if (showLogsBtn && showNotificationsBtn) {
     logsWrapper.style.display = "none";
     if (paginationControls) paginationControls.style.display = "none";
     notificationsSection.style.display = "block";
+    showNotificationsBtn.classList.remove("has-alert");
+    showNotificationsBtn.setAttribute("aria-label", "Notifications");
     await loadNotifications();
+    window.dispatchEvent(new Event("aa:notification-state-changed"));
   });
 }
 
