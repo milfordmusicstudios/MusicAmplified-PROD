@@ -1931,7 +1931,12 @@ function createNotificationAdminControls(statusText = "") {
       const updatedTimestamps = Number(data?.updatedTimestamps ?? data?.updated_timestamps ?? data?.updatedNotificationTimestamps ?? 0);
       const timestampUpdatesAttempted = Number(data?.timestampUpdatesAttempted ?? data?.timestamp_updates_attempted ?? 0);
       const timestampUpdatesCompleted = Number(data?.timestampUpdatesCompleted ?? data?.timestamp_updates_completed ?? updatedTimestamps);
+      const attempted = Number(data?.attempted ?? timestampUpdatesAttempted);
+      const updated = Number(data?.updated ?? timestampUpdatesCompleted);
       const duplicateGroupsFound = Number(data?.duplicateGroupsFound ?? data?.duplicate_groups_found ?? 0);
+      const unmatchedStudent = Number(data?.unmatched_student ?? data?.unmatchedStudent ?? 0);
+      const unmatchedLevel = Number(data?.unmatched_level ?? data?.unmatchedLevel ?? 0);
+      const noCrossingLog = Number(data?.no_crossing_log ?? data?.noCrossingLog ?? 0);
       const preview = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
       if (preview.error) throw preview.error;
       const rawPreviewCount = Array.isArray(preview.data) ? preview.data.length : 0;
@@ -1942,13 +1947,18 @@ function createNotificationAdminControls(statusText = "") {
         studioId: viewerContext.studioId,
         result: data,
         created,
+        attempted,
+        updated,
         timestampUpdatesAttempted,
         timestampUpdatesCompleted,
         duplicateGroupsFound,
+        unmatchedStudent,
+        unmatchedLevel,
+        noCrossingLog,
         hiddenDuplicates
       });
       await loadNotifications(
-        `Created ${created} notification${created === 1 ? "" : "s"}; updated ${updatedTimestamps} timestamp${updatedTimestamps === 1 ? "" : "s"}; hidden ${hiddenDuplicates} duplicate${hiddenDuplicates === 1 ? "" : "s"}.`,
+        `Created ${created} notification${created === 1 ? "" : "s"}; updated ${updatedTimestamps} timestamp${updatedTimestamps === 1 ? "" : "s"}; hidden ${hiddenDuplicates} duplicate${hiddenDuplicates === 1 ? "" : "s"}. Unmatched: ${unmatchedStudent} student, ${unmatchedLevel} level, ${noCrossingLog} crossing log.`,
         { resetPage: true, prefetchedNotifications: preview.data, prefetchedError: preview.error }
       );
       await updateNotificationsButtonState();
