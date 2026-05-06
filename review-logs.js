@@ -1229,6 +1229,32 @@ const notificationsSection = document.getElementById("notificationsSection");
 const NOTIFICATION_FETCH_PAGE_SIZE = 1000;
 const NOTIFICATION_FETCH_ADMIN_CAP = 20000;
 const DEFAULT_NOTIFICATION_PAGE_SIZE = 100;
+const notificationFilterElements = {
+  modal: document.getElementById("filterNotificationsModal"),
+  close: document.getElementById("filterNotificationsClose"),
+  studentSearch: document.getElementById("notificationFilterStudentSearch"),
+  studentsDropdown: document.getElementById("notificationFilterStudentsDropdown"),
+  studentsSelected: document.getElementById("notificationFilterStudentsSelected"),
+  dateFrom: document.getElementById("notificationFilterDateFrom"),
+  dateTo: document.getElementById("notificationFilterDateTo"),
+  keyword: document.getElementById("notificationFilterKeyword"),
+  type: document.getElementById("notificationFilterType"),
+  recognition: document.getElementById("notificationFilterRecognition"),
+  sort: document.getElementById("notificationSort"),
+  apply: document.getElementById("applyNotificationFiltersBtn"),
+  reset: document.getElementById("resetNotificationFiltersBtn")
+};
+let notificationFilters = {
+  studentIds: [],
+  dateFrom: "",
+  dateTo: "",
+  keyword: "",
+  type: "",
+  recognition: "all",
+  sort: "newest"
+};
+let notificationFilterRoster = [];
+const notificationSelectedStudentIds = new Set();
 
 const isLevelUpNotification = (row) => {
   const type = String(row?.type || "").toLowerCase();
@@ -1263,6 +1289,47 @@ const getRecognitionGivenByValue = (row) =>
 const getRecognitionNoteValue = (row) =>
   String(row?.recognition_note ?? row?.recognitionNote ?? "");
 
+const getNotificationUserId = (row) => String(row?.user_id || row?.userId || "").trim();
+const getNotificationType = (row) => String(row?.type || "").trim().toLowerCase();
+const getNotificationText = (row) => `${row?.title || ""} ${row?.message || ""}`.trim();
+const getNotificationLevelNumber = (row) => {
+  const direct = Number(row?.completed_level_start ?? row?.completedLevelStart ?? row?.completed_level_end ?? row?.completedLevelEnd);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const match = String(row?.message || "").match(/\bLevels?\s+(\d+)/i);
+  return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+};
+const getNotificationStudentName = (row) => {
+  const message = String(row?.message || "").trim();
+  const match = message.match(/^(.+?)\s+(?:completed|reached|advanced)/i);
+  if (match?.[1]) return match[1].trim();
+  const userId = getNotificationUserId(row);
+  const rosterMatch = notificationFilterRoster.find((student) => String(student.id) === userId);
+  return rosterMatch ? getQuickAddStudentName(rosterMatch) : "";
+};
+const getNotificationDedupeKey = (row) => {
+  const levelOrMessage = Number.isFinite(getNotificationLevelNumber(row))
+    ? `level:${getNotificationLevelNumber(row)}`
+    : `message:${String(row?.message || "").trim().toLowerCase()}`;
+  return [
+    String(row?.studio_id || "").trim(),
+    getNotificationUserId(row),
+    getNotificationType(row),
+    levelOrMessage
+  ].join("|");
+};
+const dedupeNotificationRows = (rows) => {
+  const seen = new Set();
+  const deduped = [];
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row) return;
+    const key = getNotificationDedupeKey(row);
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(row);
+  });
+  return deduped;
+};
+
 const sortNotificationsNewestFirst = (rows) => [...rows].sort((a, b) => {
   const aTime = new Date(a?.created_at || 0).getTime();
   const bTime = new Date(b?.created_at || 0).getTime();
@@ -1274,7 +1341,7 @@ const mergeNotificationRows = (rowSets, limit) => {
   const merged = [];
   rowSets.flat().forEach((row) => {
     if (!row) return;
-    const key = String(row?.id || `${row?.created_at || ""}:${row?.message || ""}:${row?.userId || row?.user_id || ""}`);
+    const key = getNotificationDedupeKey(row) || String(row?.id || `${row?.created_at || ""}:${row?.message || ""}:${row?.userId || row?.user_id || ""}`);
     if (seen.has(key)) return;
     seen.add(key);
     merged.push(row);
@@ -1547,6 +1614,255 @@ async function updateNotificationsButtonState() {
     : "Notifications");
 }
 
+function hasActiveNotificationFilters() {
+  return Boolean(
+    notificationFilters.studentIds.length ||
+    notificationFilters.dateFrom ||
+    notificationFilters.dateTo ||
+    notificationFilters.keyword ||
+    notificationFilters.type ||
+    notificationFilters.recognition !== "all" ||
+    notificationFilters.sort !== "newest"
+  );
+}
+
+function renderNotificationFilterSummary(container, count) {
+  const parts = [];
+  if (notificationFilters.studentIds.length) {
+    parts.push(notificationFilters.studentIds.map((id) => {
+      const student = notificationFilterRoster.find((row) => String(row.id) === String(id));
+      return student ? getQuickAddStudentName(student) : "";
+    }).filter(Boolean).join(", ") || "Selected students");
+  }
+  if (notificationFilters.type) parts.push(notificationFilters.type.replace(/_/g, " "));
+  if (notificationFilters.recognition !== "all") parts.push(notificationFilters.recognition === "given" ? "Recognition given" : "Recognition not given");
+  if (notificationFilters.dateFrom || notificationFilters.dateTo) {
+    const from = notificationFilters.dateFrom ? formatDateOnlyForDisplay(notificationFilters.dateFrom, { month: "short", day: "numeric" }) : "Start";
+    const to = notificationFilters.dateTo ? formatDateOnlyForDisplay(notificationFilters.dateTo, { month: "short", day: "numeric" }) : "Today";
+    parts.push(`${from}-${to}`);
+  }
+  if (notificationFilters.keyword) parts.push(`"${notificationFilters.keyword}"`);
+  if (notificationFilters.sort !== "newest") parts.push(`Sort: ${notificationFilters.sort.replace(/_/g, " ")}`);
+  container.textContent = parts.length ? `Filtered by: ${parts.join(", ")} (${count} match${count === 1 ? "" : "es"})` : "";
+  container.style.display = parts.length ? "block" : "none";
+}
+
+function applyNotificationFiltersAndSort(rows) {
+  const selectedIds = notificationFilters.studentIds.map(String);
+  const selectedNames = selectedIds.map((id) => {
+    const student = notificationFilterRoster.find((row) => String(row.id) === id);
+    return student ? getQuickAddStudentName(student).toLowerCase() : "";
+  }).filter(Boolean);
+  const keyword = notificationFilters.keyword.toLowerCase();
+  const filtered = (Array.isArray(rows) ? rows : []).filter((row) => {
+    const dateOnly = getDateOnlyString(row?.created_at);
+    const text = getNotificationText(row).toLowerCase();
+    const userId = getNotificationUserId(row);
+    const matchesStudent = !selectedIds.length ||
+      selectedIds.includes(userId) ||
+      selectedNames.some((name) => name && text.includes(name));
+    const matchesFrom = !notificationFilters.dateFrom || (dateOnly && dateOnly >= notificationFilters.dateFrom);
+    const matchesTo = !notificationFilters.dateTo || (dateOnly && dateOnly <= notificationFilters.dateTo);
+    const matchesKeyword = !keyword || text.includes(keyword);
+    const matchesType = !notificationFilters.type || getNotificationType(row) === notificationFilters.type;
+    const recognized = isRecognitionGiven(row);
+    const matchesRecognition = notificationFilters.recognition === "all" ||
+      (notificationFilters.recognition === "given" && recognized) ||
+      (notificationFilters.recognition === "not_given" && !recognized);
+    return matchesStudent && matchesFrom && matchesTo && matchesKeyword && matchesType && matchesRecognition;
+  });
+  return filtered.sort((a, b) => {
+    if (notificationFilters.sort === "oldest") {
+      return new Date(a?.created_at || 0).getTime() - new Date(b?.created_at || 0).getTime();
+    }
+    if (notificationFilters.sort === "student_az") {
+      return getNotificationStudentName(a).localeCompare(getNotificationStudentName(b), undefined, { sensitivity: "base" });
+    }
+    if (notificationFilters.sort === "level_low_high") {
+      return getNotificationLevelNumber(a) - getNotificationLevelNumber(b);
+    }
+    if (notificationFilters.sort === "recognition_not_given") {
+      return Number(isRecognitionGiven(a)) - Number(isRecognitionGiven(b)) ||
+        (new Date(b?.created_at || 0).getTime() - new Date(a?.created_at || 0).getTime());
+    }
+    return new Date(b?.created_at || 0).getTime() - new Date(a?.created_at || 0).getTime();
+  });
+}
+
+function renderNotificationPickerSelected() {
+  const target = notificationFilterElements.studentsSelected;
+  if (!target) return;
+  target.innerHTML = "";
+  if (!notificationSelectedStudentIds.size) {
+    const empty = document.createElement("span");
+    empty.className = "staff-student-empty";
+    empty.textContent = "No students selected";
+    target.appendChild(empty);
+    return;
+  }
+  notificationFilterRoster
+    .filter((student) => notificationSelectedStudentIds.has(String(student.id)))
+    .forEach((student) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "staff-student-chip";
+      chip.textContent = `${getQuickAddStudentName(student)} x`;
+      chip.addEventListener("click", () => {
+        notificationSelectedStudentIds.delete(String(student.id));
+        renderNotificationPickerSelected();
+        renderNotificationPickerDropdown();
+      });
+      target.appendChild(chip);
+    });
+}
+
+function renderNotificationPickerDropdown() {
+  const input = notificationFilterElements.studentSearch;
+  const dropdown = notificationFilterElements.studentsDropdown;
+  if (!input || !dropdown) return;
+  const query = String(input.value || "").trim().toLowerCase();
+  dropdown.innerHTML = "";
+  if (!query) {
+    dropdown.setAttribute("hidden", "");
+    return;
+  }
+  const matches = notificationFilterRoster.filter((student) => getQuickAddStudentName(student).toLowerCase().includes(query));
+  if (!matches.length) {
+    const empty = document.createElement("div");
+    empty.className = "staff-student-no-match";
+    empty.textContent = "No matching students";
+    dropdown.appendChild(empty);
+    dropdown.removeAttribute("hidden");
+    return;
+  }
+  matches.forEach((student) => {
+    const id = String(student.id);
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "staff-student-option";
+    const selected = notificationSelectedStudentIds.has(id);
+    item.textContent = selected ? `Selected: ${getQuickAddStudentName(student)}` : getQuickAddStudentName(student);
+    if (selected) item.classList.add("is-selected");
+    item.addEventListener("click", () => {
+      if (notificationSelectedStudentIds.has(id)) notificationSelectedStudentIds.delete(id);
+      else notificationSelectedStudentIds.add(id);
+      renderNotificationPickerSelected();
+      renderNotificationPickerDropdown();
+      input.focus();
+    });
+    dropdown.appendChild(item);
+  });
+  dropdown.removeAttribute("hidden");
+}
+
+async function loadNotificationFilterStudents() {
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, firstName, lastName, email, roles, teacherIds")
+    .eq("studio_id", viewerContext.studioId)
+    .eq("active", true)
+    .is("deactivated_at", null);
+  if (error) {
+    console.error("[ReviewLogs] notification filter students failed", error);
+    notificationFilterRoster = [];
+    renderNotificationPickerSelected();
+    return;
+  }
+  notificationFilterRoster = (data || [])
+    .filter((student) => {
+      const roles = Array.isArray(student.roles) ? student.roles : [student.roles];
+      return roles.map((role) => String(role || "").toLowerCase()).includes("student") && getQuickAddStudentName(student) !== "Student";
+    })
+    .sort((a, b) => getQuickAddStudentName(a).localeCompare(getQuickAddStudentName(b), undefined, { sensitivity: "base" }));
+  renderNotificationPickerSelected();
+  renderNotificationPickerDropdown();
+}
+
+function syncNotificationFilterModalFields() {
+  notificationSelectedStudentIds.clear();
+  notificationFilters.studentIds.forEach((id) => notificationSelectedStudentIds.add(String(id)));
+  if (notificationFilterElements.studentSearch) notificationFilterElements.studentSearch.value = "";
+  if (notificationFilterElements.dateFrom) notificationFilterElements.dateFrom.value = notificationFilters.dateFrom;
+  if (notificationFilterElements.dateTo) notificationFilterElements.dateTo.value = notificationFilters.dateTo;
+  if (notificationFilterElements.keyword) notificationFilterElements.keyword.value = notificationFilters.keyword;
+  if (notificationFilterElements.type) notificationFilterElements.type.value = notificationFilters.type;
+  if (notificationFilterElements.recognition) notificationFilterElements.recognition.value = notificationFilters.recognition;
+  if (notificationFilterElements.sort) notificationFilterElements.sort.value = notificationFilters.sort;
+  renderNotificationPickerSelected();
+  renderNotificationPickerDropdown();
+}
+
+function collectNotificationFilterModalFields() {
+  return {
+    studentIds: Array.from(notificationSelectedStudentIds),
+    dateFrom: notificationFilterElements.dateFrom?.value || "",
+    dateTo: notificationFilterElements.dateTo?.value || "",
+    keyword: String(notificationFilterElements.keyword?.value || "").trim(),
+    type: notificationFilterElements.type?.value || "",
+    recognition: notificationFilterElements.recognition?.value || "all",
+    sort: notificationFilterElements.sort?.value || "newest"
+  };
+}
+
+function closeNotificationFilterModal() {
+  if (notificationFilterElements.modal) notificationFilterElements.modal.style.display = "none";
+  if (notificationFilterElements.studentsDropdown) notificationFilterElements.studentsDropdown.setAttribute("hidden", "");
+}
+
+async function openNotificationFilterModal() {
+  await loadNotificationFilterStudents();
+  syncNotificationFilterModalFields();
+  if (notificationFilterElements.modal) notificationFilterElements.modal.style.display = "flex";
+  if (notificationFilterElements.studentSearch) notificationFilterElements.studentSearch.focus();
+}
+
+function resetNotificationFilters() {
+  notificationFilters = {
+    studentIds: [],
+    dateFrom: "",
+    dateTo: "",
+    keyword: "",
+    type: "",
+    recognition: "all",
+    sort: "newest"
+  };
+  notificationSelectedStudentIds.clear();
+  syncNotificationFilterModalFields();
+}
+
+if (notificationFilterElements.close) {
+  notificationFilterElements.close.addEventListener("click", closeNotificationFilterModal);
+}
+if (notificationFilterElements.modal) {
+  notificationFilterElements.modal.addEventListener("click", (event) => {
+    if (event.target === notificationFilterElements.modal) closeNotificationFilterModal();
+  });
+}
+if (notificationFilterElements.studentSearch) {
+  notificationFilterElements.studentSearch.addEventListener("input", renderNotificationPickerDropdown);
+  notificationFilterElements.studentSearch.addEventListener("focus", renderNotificationPickerDropdown);
+}
+if (notificationFilterElements.apply) {
+  notificationFilterElements.apply.addEventListener("click", async () => {
+    notificationFilters = collectNotificationFilterModalFields();
+    closeNotificationFilterModal();
+    await loadNotifications("", { resetPage: true });
+  });
+}
+if (notificationFilterElements.reset) {
+  notificationFilterElements.reset.addEventListener("click", async () => {
+    resetNotificationFilters();
+    closeNotificationFilterModal();
+    await loadNotifications("", { resetPage: true });
+  });
+}
+document.addEventListener("click", (event) => {
+  const picker = notificationFilterElements.studentSearch?.closest(".staff-student-picker");
+  if (picker && !picker.contains(event.target) && notificationFilterElements.studentsDropdown) {
+    notificationFilterElements.studentsDropdown.setAttribute("hidden", "");
+  }
+});
+
 if (showLogsBtn && showNotificationsBtn) {
   showLogsBtn.addEventListener("click", () => {
     logsWrapper.style.display = "block";
@@ -1565,17 +1881,31 @@ if (showLogsBtn && showNotificationsBtn) {
 function createNotificationAdminControls(statusText = "") {
   const controls = document.createElement("div");
   controls.className = "notification-admin-controls";
-  if (!viewerContext?.isAdmin) return controls;
+
+  const filterButton = document.createElement("button");
+  filterButton.id = "filterNotificationsBtn";
+  filterButton.className = "blue-button";
+  filterButton.type = "button";
+  filterButton.textContent = "Filter Notifications";
+  filterButton.addEventListener("click", () => {
+    void openNotificationFilterModal();
+  });
+  controls.appendChild(filterButton);
+
+  const status = document.createElement("span");
+  status.className = "notification-admin-status";
+  status.textContent = statusText;
+
+  if (!viewerContext?.isAdmin) {
+    controls.appendChild(status);
+    return controls;
+  }
 
   const button = document.createElement("button");
   button.id = "recalculateNotificationsBtn";
   button.className = "blue-button";
   button.type = "button";
   button.textContent = "Recalculate Notifications";
-
-  const status = document.createElement("span");
-  status.className = "notification-admin-status";
-  status.textContent = statusText;
 
   button.addEventListener("click", async () => {
     if (!confirm("This will rebuild missing level-up notifications. Continue?")) return;
@@ -1639,28 +1969,35 @@ async function loadNotifications(statusText = "", options = {}) {
     return;
   }
 
-  const uniqueNotifications = sortNotificationsNewestFirst(mergeNotificationRows([notifications], NOTIFICATION_FETCH_ADMIN_CAP));
-  await markNotificationsRead(uniqueNotifications);
-  const normalizedNotifications = uniqueNotifications.map((row) => ({ ...row, read: true }));
+  const rawNotificationCount = Array.isArray(notifications) ? notifications.length : 0;
+  const dedupedNotifications = sortNotificationsNewestFirst(mergeNotificationRows([notifications], NOTIFICATION_FETCH_ADMIN_CAP));
+  await markNotificationsRead(dedupedNotifications);
+  const normalizedNotifications = dedupedNotifications.map((row) => ({ ...row, read: true }));
+  const filteredNotifications = applyNotificationFiltersAndSort(normalizedNotifications);
+  const dedupedNotificationCount = normalizedNotifications.length;
+  const filteredNotificationCount = filteredNotifications.length;
 
   console.log("[ReviewLogs] notifications fetched for render", {
-    totalNotificationsFetched: Array.isArray(notifications) ? notifications.length : 0,
-    totalNotificationsAfterMerge: normalizedNotifications.length,
+    rawNotificationCount,
+    dedupedNotificationCount,
+    filteredNotificationCount,
     currentPage: notificationCurrentPage,
     pageSize: notificationPageSize,
-    activeFilters: {
-      studio_id: viewerContext?.studioId || null,
-      viewerCanSeeStudioNotifications: Boolean(viewerContext?.isAdmin || viewerContext?.isTeacher),
-      search: null,
-      filters: null
-    }
+    activeFilters: notificationFilters
   });
   console.log("[ReviewLogs] notifications loaded", {
     notificationsLoaded: normalizedNotifications.length,
+    rawNotificationCount,
+    dedupedNotificationCount,
+    filteredNotificationCount,
     currentPage: notificationCurrentPage,
     pageSize: notificationPageSize,
     renderedNotificationCount: 0
   });
+
+  const filterSummaryEl = document.createElement("div");
+  filterSummaryEl.className = "active-filters-summary notification-active-filters-summary";
+  renderNotificationFilterSummary(filterSummaryEl, filteredNotificationCount);
 
   const countEl = document.createElement("div");
   countEl.className = "notification-count-summary";
@@ -1721,12 +2058,20 @@ async function loadNotifications(statusText = "", options = {}) {
 
   const renderNotificationRows = () => {
     list.querySelectorAll(".review-notification-item").forEach((item) => item.remove());
-    const total = normalizedNotifications.length;
+    const total = filteredNotifications.length;
     const totalPages = Math.max(1, Math.ceil(total / notificationPageSize));
     notificationCurrentPage = Math.max(1, Math.min(notificationCurrentPage, totalPages));
     const startIndex = (notificationCurrentPage - 1) * notificationPageSize;
     const endIndexExclusive = Math.min(startIndex + notificationPageSize, total);
-    const pageRows = normalizedNotifications.slice(startIndex, endIndexExclusive);
+    const pageRows = filteredNotifications.slice(startIndex, endIndexExclusive);
+    if (!pageRows.length) {
+      const emptyItem = document.createElement("li");
+      emptyItem.className = "review-notification-item";
+      emptyItem.textContent = hasActiveNotificationFilters()
+        ? "No notifications match the active filters."
+        : "No notifications yet.";
+      list.appendChild(emptyItem);
+    }
     pageRows.forEach(n => {
     const li = document.createElement("li");
     const recognized = isRecognitionGiven(n);
@@ -1829,18 +2174,15 @@ async function loadNotifications(statusText = "", options = {}) {
     prevBtn.disabled = notificationCurrentPage <= 1;
     nextBtn.disabled = notificationCurrentPage >= totalPages;
     console.log("[ReviewLogs] notifications rendered", {
-      totalNotificationsFetched: Array.isArray(notifications) ? notifications.length : 0,
+      rawNotificationCount,
+      dedupedNotificationCount,
+      filteredNotificationCount,
       totalNotificationsRendered: pageRows.length,
-      totalNotificationsAvailable: normalizedNotifications.length,
+      totalNotificationsAvailable: filteredNotifications.length,
       currentPage: notificationCurrentPage,
       pageSize: notificationPageSize,
       renderedNotificationCount: pageRows.length,
-      activeFilters: {
-        studio_id: viewerContext?.studioId || null,
-        viewerCanSeeStudioNotifications: Boolean(viewerContext?.isAdmin || viewerContext?.isTeacher),
-        search: null,
-        filters: null
-      }
+      activeFilters: notificationFilters
     });
   };
 
@@ -1850,7 +2192,7 @@ async function loadNotifications(statusText = "", options = {}) {
     renderNotificationRows();
   });
   nextBtn.addEventListener("click", () => {
-    const totalPages = Math.max(1, Math.ceil(normalizedNotifications.length / notificationPageSize));
+    const totalPages = Math.max(1, Math.ceil(filteredNotifications.length / notificationPageSize));
     if (notificationCurrentPage >= totalPages) return;
     notificationCurrentPage += 1;
     renderNotificationRows();
@@ -1866,6 +2208,7 @@ async function loadNotifications(statusText = "", options = {}) {
 
   notificationsSection.innerHTML = "";
   notificationsSection.appendChild(createNotificationAdminControls(statusText));
+  notificationsSection.appendChild(filterSummaryEl);
   notificationsSection.appendChild(countEl);
   notificationsSection.appendChild(pager);
   notificationsSection.appendChild(list);
