@@ -4433,9 +4433,19 @@ body.review-logs-page .notification-count-summary {
   margin: 0 0 10px;
 }
 
-body.review-logs-page .notification-load-more {
-  display: block;
-  margin: 14px auto 0;
+body.review-logs-page .notification-pagination-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+
+body.review-logs-page .notification-page-info {
+  color: #0B4F8A;
+  font-size: 14px;
+  font-weight: 800;
 }
 
 body.review-logs-page .logs-table-wrap {

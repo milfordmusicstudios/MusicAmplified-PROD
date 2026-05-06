@@ -1224,10 +1224,11 @@ logsTableBody.addEventListener("change", (e) => {
 const showLogsBtn = document.getElementById("showLogsBtn");
 const showNotificationsBtn = document.getElementById("showNotificationsBtn");
 const logsWrapper = document.getElementById("logsWrapper");
+const paginationControls = document.getElementById("paginationControls");
 const notificationsSection = document.getElementById("notificationsSection");
 const NOTIFICATION_FETCH_PAGE_SIZE = 1000;
 const NOTIFICATION_FETCH_ADMIN_CAP = 20000;
-const NOTIFICATION_RENDER_PAGE_SIZE = 100;
+const DEFAULT_NOTIFICATION_PAGE_SIZE = 100;
 
 const isLevelUpNotification = (row) => {
   const type = String(row?.type || "").toLowerCase();
@@ -1549,11 +1550,13 @@ async function updateNotificationsButtonState() {
 if (showLogsBtn && showNotificationsBtn) {
   showLogsBtn.addEventListener("click", () => {
     logsWrapper.style.display = "block";
+    if (paginationControls) paginationControls.style.display = "";
     notificationsSection.style.display = "none";
   });
 
   showNotificationsBtn.addEventListener("click", async () => {
     logsWrapper.style.display = "none";
+    if (paginationControls) paginationControls.style.display = "none";
     notificationsSection.style.display = "block";
     await loadNotifications();
   });
@@ -1590,7 +1593,7 @@ function createNotificationAdminControls(statusText = "") {
         result: data,
         created
       });
-      await loadNotifications(`Created ${created} notification${created === 1 ? "" : "s"}.`);
+      await loadNotifications(`Created ${created} notification${created === 1 ? "" : "s"}.`, { resetPage: true });
       await updateNotificationsButtonState();
       window.dispatchEvent(new Event("aa:notification-state-changed"));
     } catch (error) {
@@ -1605,8 +1608,11 @@ function createNotificationAdminControls(statusText = "") {
   return controls;
 }
 
-async function loadNotifications(statusText = "") {
+async function loadNotifications(statusText = "", options = {}) {
   notificationsSection.innerHTML = "<p>Loading notifications...</p>";
+  let notificationCurrentPage = options?.resetPage ? 1 : 1;
+  let notificationPageSize = Number(document.getElementById("logsPerPage")?.value || DEFAULT_NOTIFICATION_PAGE_SIZE);
+  if (!Number.isFinite(notificationPageSize) || notificationPageSize <= 0) notificationPageSize = DEFAULT_NOTIFICATION_PAGE_SIZE;
 
   const { data: notifications, error } = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
 
@@ -1640,6 +1646,8 @@ async function loadNotifications(statusText = "") {
   console.log("[ReviewLogs] notifications fetched for render", {
     totalNotificationsFetched: Array.isArray(notifications) ? notifications.length : 0,
     totalNotificationsAfterMerge: normalizedNotifications.length,
+    currentPage: notificationCurrentPage,
+    pageSize: notificationPageSize,
     activeFilters: {
       studio_id: viewerContext?.studioId || null,
       viewerCanSeeStudioNotifications: Boolean(viewerContext?.isAdmin || viewerContext?.isTeacher),
@@ -1647,8 +1655,13 @@ async function loadNotifications(statusText = "") {
       filters: null
     }
   });
+  console.log("[ReviewLogs] notifications loaded", {
+    notificationsLoaded: normalizedNotifications.length,
+    currentPage: notificationCurrentPage,
+    pageSize: notificationPageSize,
+    renderedNotificationCount: 0
+  });
 
-  let renderedCount = Math.min(NOTIFICATION_RENDER_PAGE_SIZE, normalizedNotifications.length);
   const countEl = document.createElement("div");
   countEl.className = "notification-count-summary";
 
@@ -1673,9 +1686,48 @@ async function loadNotifications(statusText = "") {
   `;
   list.appendChild(header);
 
+  const pager = document.createElement("div");
+  pager.className = "notification-pagination-row";
+  const prevBtn = document.createElement("button");
+  prevBtn.type = "button";
+  prevBtn.className = "blue-button";
+  prevBtn.textContent = "Prev";
+  const pageInfo = document.createElement("span");
+  pageInfo.className = "notification-page-info";
+  const nextBtn = document.createElement("button");
+  nextBtn.type = "button";
+  nextBtn.className = "blue-button";
+  nextBtn.textContent = "Next";
+  const pageSizeSelect = document.createElement("select");
+  pageSizeSelect.className = "blue-button";
+  [25, 50, 100].forEach((size) => {
+    const option = document.createElement("option");
+    option.value = String(size);
+    option.textContent = String(size);
+    if (size === notificationPageSize) option.selected = true;
+    pageSizeSelect.appendChild(option);
+  });
+  if (![25, 50, 100].includes(notificationPageSize)) {
+    const option = document.createElement("option");
+    option.value = String(notificationPageSize);
+    option.textContent = String(notificationPageSize);
+    option.selected = true;
+    pageSizeSelect.appendChild(option);
+  }
+  pager.appendChild(prevBtn);
+  pager.appendChild(pageInfo);
+  pager.appendChild(nextBtn);
+  pager.appendChild(pageSizeSelect);
+
   const renderNotificationRows = () => {
     list.querySelectorAll(".review-notification-item").forEach((item) => item.remove());
-    normalizedNotifications.slice(0, renderedCount).forEach(n => {
+    const total = normalizedNotifications.length;
+    const totalPages = Math.max(1, Math.ceil(total / notificationPageSize));
+    notificationCurrentPage = Math.max(1, Math.min(notificationCurrentPage, totalPages));
+    const startIndex = (notificationCurrentPage - 1) * notificationPageSize;
+    const endIndexExclusive = Math.min(startIndex + notificationPageSize, total);
+    const pageRows = normalizedNotifications.slice(startIndex, endIndexExclusive);
+    pageRows.forEach(n => {
     const li = document.createElement("li");
     const recognized = isRecognitionGiven(n);
     const isLevelUp = isLevelUpNotification(n);
@@ -1770,11 +1822,19 @@ async function loadNotifications(statusText = "") {
     }
     list.appendChild(li);
     });
-    countEl.textContent = `Showing ${Math.min(renderedCount, normalizedNotifications.length)} of ${normalizedNotifications.length} notifications`;
+    const displayStart = total ? startIndex + 1 : 0;
+    const displayEnd = endIndexExclusive;
+    countEl.textContent = `Showing ${displayStart}-${displayEnd} of ${total} notifications`;
+    pageInfo.textContent = `Page ${notificationCurrentPage} of ${totalPages}`;
+    prevBtn.disabled = notificationCurrentPage <= 1;
+    nextBtn.disabled = notificationCurrentPage >= totalPages;
     console.log("[ReviewLogs] notifications rendered", {
       totalNotificationsFetched: Array.isArray(notifications) ? notifications.length : 0,
-      totalNotificationsRendered: Math.min(renderedCount, normalizedNotifications.length),
+      totalNotificationsRendered: pageRows.length,
       totalNotificationsAvailable: normalizedNotifications.length,
+      currentPage: notificationCurrentPage,
+      pageSize: notificationPageSize,
+      renderedNotificationCount: pageRows.length,
       activeFilters: {
         studio_id: viewerContext?.studioId || null,
         viewerCanSeeStudioNotifications: Boolean(viewerContext?.isAdmin || viewerContext?.isTeacher),
@@ -1784,24 +1844,31 @@ async function loadNotifications(statusText = "") {
     });
   };
 
-  const loadMoreBtn = document.createElement("button");
-  loadMoreBtn.type = "button";
-  loadMoreBtn.className = "blue-button notification-load-more";
-  loadMoreBtn.textContent = "Load More";
-  loadMoreBtn.addEventListener("click", () => {
-    renderedCount = Math.min(renderedCount + NOTIFICATION_RENDER_PAGE_SIZE, normalizedNotifications.length);
+  prevBtn.addEventListener("click", () => {
+    if (notificationCurrentPage <= 1) return;
+    notificationCurrentPage -= 1;
     renderNotificationRows();
-    loadMoreBtn.style.display = renderedCount < normalizedNotifications.length ? "" : "none";
+  });
+  nextBtn.addEventListener("click", () => {
+    const totalPages = Math.max(1, Math.ceil(normalizedNotifications.length / notificationPageSize));
+    if (notificationCurrentPage >= totalPages) return;
+    notificationCurrentPage += 1;
+    renderNotificationRows();
+  });
+  pageSizeSelect.addEventListener("change", () => {
+    const nextSize = Number(pageSizeSelect.value);
+    notificationPageSize = Number.isFinite(nextSize) && nextSize > 0 ? nextSize : DEFAULT_NOTIFICATION_PAGE_SIZE;
+    notificationCurrentPage = 1;
+    renderNotificationRows();
   });
 
   renderNotificationRows();
-  loadMoreBtn.style.display = renderedCount < normalizedNotifications.length ? "" : "none";
 
   notificationsSection.innerHTML = "";
   notificationsSection.appendChild(createNotificationAdminControls(statusText));
   notificationsSection.appendChild(countEl);
+  notificationsSection.appendChild(pager);
   notificationsSection.appendChild(list);
-  notificationsSection.appendChild(loadMoreBtn);
   await updateNotificationsButtonState();
 }
 
