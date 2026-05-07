@@ -5,6 +5,7 @@ import { getViewerContextSafely } from "./nav-helpers.js";
 import { supabase } from "./supabaseClient.js";
 
 const ADMIN_MODE_KEY = "aa.adminModeEnabled";
+const REVIEW_LOGS_SEEN_PREFIX = "aa.reviewLogsSeen.";
 const AUTH_PAGES = new Set(["login.html", "signup.html", "forgot-password.html", "info.html", "info"]);
 const STAFF_ONLY_PAGES = new Set([
   "review-logs.html",
@@ -110,6 +111,32 @@ function setNavNotificationDot(href, enabled) {
   }
 }
 
+function getReviewLogsSeenKey(ctx) {
+  const studioId = String(ctx?.studioId || "").trim();
+  const viewerUserId = String(ctx?.viewerUserId || "").trim();
+  if (!studioId || !viewerUserId) return "";
+  return `${REVIEW_LOGS_SEEN_PREFIX}${studioId}:${viewerUserId}`;
+}
+
+function getReviewLogsSeenMarker(ctx) {
+  const key = getReviewLogsSeenKey(ctx);
+  if (!key) return "";
+  return String(localStorage.getItem(key) || "");
+}
+
+function setReviewLogsSeenMarker(ctx, marker) {
+  const key = getReviewLogsSeenKey(ctx);
+  if (!key || !marker) return;
+  localStorage.setItem(key, marker);
+}
+
+function getPendingLogMarker(row) {
+  if (!row) return "";
+  const createdAt = String(row?.created_at || row?.createdAt || row?.date || "").trim();
+  const id = String(row?.id || "").trim();
+  return `${createdAt}|${id}`;
+}
+
 async function hasStudentNeedsInfoLogs(ctx) {
   const activeStudentId = String(
     localStorage.getItem("aa.activeStudentId")
@@ -132,18 +159,21 @@ async function hasStudentNeedsInfoLogs(ctx) {
   return Number(count || 0) > 0;
 }
 
-async function hasStaffPendingLogs(ctx) {
+async function getLatestStaffPendingLogMarker(ctx) {
   const studioId = String(ctx?.studioId || "").trim();
-  if (!studioId) return false;
+  if (!studioId) return "";
   const isAdmin = Array.isArray(ctx?.viewerRoles) && ctx.viewerRoles.map(r => String(r || "").toLowerCase()).includes("admin");
   const isTeacher = Array.isArray(ctx?.viewerRoles) && ctx.viewerRoles.map(r => String(r || "").toLowerCase()).includes("teacher");
-  if (!isAdmin && !isTeacher) return false;
+  if (!isAdmin && !isTeacher) return "";
 
   let query = supabase
     .from("logs")
-    .select("id", { count: "exact", head: true })
+    .select("id,created_at,date")
     .eq("studio_id", studioId)
-    .eq("status", "pending");
+    .eq("status", "pending")
+    .order("created_at", { ascending: false, nulls: "last" })
+    .order("id", { ascending: false })
+    .limit(1);
 
   if (isTeacher && !isAdmin) {
     const { data: studentRows, error: studentErr } = await supabase
@@ -152,7 +182,7 @@ async function hasStaffPendingLogs(ctx) {
       .eq("studio_id", studioId);
     if (studentErr) {
       console.warn("[nav] teacher pending lookup users failed", studentErr);
-      return false;
+      return "";
     }
     const teacherId = String(ctx?.viewerUserId || "").trim();
     const studentIds = (Array.isArray(studentRows) ? studentRows : [])
@@ -162,16 +192,16 @@ async function hasStaffPendingLogs(ctx) {
       })
       .map((row) => String(row?.id || "").trim())
       .filter(Boolean);
-    if (!studentIds.length) return false;
+    if (!studentIds.length) return "";
     query = query.in("userId", studentIds);
   }
 
-  const { count, error } = await query;
+  const { data, error } = await query;
   if (error) {
     console.warn("[nav] pending badge lookup failed", error);
-    return false;
+    return "";
   }
-  return Number(count || 0) > 0;
+  return getPendingLogMarker(Array.isArray(data) ? data[0] : null);
 }
 
 function isLevelUpNotification(row) {
@@ -301,12 +331,84 @@ async function hasStaffUnreadLevelUpNotifications(ctx) {
   return unreadLevelUpCount > 0;
 }
 
+async function markStaffUnreadLevelUpNotificationsRead(ctx) {
+  const viewerUserId = String(ctx?.viewerUserId || "").trim();
+  if (!viewerUserId) return;
+  const activeStudioId = String(ctx?.studioId || "").trim();
+  const attempts = [
+    { label: "user_id+studio_id", userKey: "user_id", includeStudio: Boolean(activeStudioId) },
+    { label: "user_id:no_studio_filter", userKey: "user_id", includeStudio: false },
+    { label: "legacy_userId+studio_id", userKey: "userId", includeStudio: Boolean(activeStudioId), legacyOnly: true }
+  ];
+  const rowSets = [];
+  for (const attempt of attempts) {
+    let query = supabase
+      .from("notifications")
+      .select("*")
+      .eq(attempt.userKey, viewerUserId)
+      .order("created_at", { ascending: false })
+      .limit(80);
+    if (attempt.includeStudio) {
+      query = query.eq("studio_id", activeStudioId);
+    }
+    const { data, error } = await query;
+    if (error) {
+      console.warn("[nav] level-up notification mark-read lookup failed", {
+        attempt: attempt.label,
+        error
+      });
+      continue;
+    }
+    if (attempt.legacyOnly && rowSets.length > 0) continue;
+    if (Array.isArray(data) && data.length) rowSets.push(data);
+  }
+
+  const unreadIds = mergeNotificationRows(rowSets, 80)
+    .filter((row) =>
+      isLevelUpNotification(row) &&
+      !shouldIgnoreLevelNotification(row) &&
+      !isNotificationRead(row)
+    )
+    .map((row) => String(row?.id || "").trim())
+    .filter(Boolean);
+  if (!unreadIds.length) return;
+
+  const updateAttempts = [
+    { label: "id+user_id", userKey: "user_id" },
+    { label: "id+userId", userKey: "userId" },
+    { label: "id-only", userKey: "" }
+  ];
+  for (const attempt of updateAttempts) {
+    let query = supabase
+      .from("notifications")
+      .update({ read: true })
+      .in("id", unreadIds)
+      .select("id");
+    if (attempt.userKey) query = query.eq(attempt.userKey, viewerUserId);
+    const { data, error } = await query;
+    if (error) {
+      console.warn("[nav] level-up notification mark-read update failed", {
+        attempt: attempt.label,
+        error
+      });
+      continue;
+    }
+    if (Array.isArray(data) && data.length) return;
+  }
+}
+
 async function applyNavNotificationDots(showStaffUI) {
   try {
     const ctx = await getViewerContextSafely();
     if (!ctx?.viewerUserId) return;
     if (showStaffUI) {
-      const hasPending = await hasStaffPendingLogs(ctx);
+      const current = getPathName();
+      const latestPendingMarker = await getLatestStaffPendingLogMarker(ctx);
+      if (current === "review-logs.html") {
+        if (latestPendingMarker) setReviewLogsSeenMarker(ctx, latestPendingMarker);
+        await markStaffUnreadLevelUpNotificationsRead(ctx);
+      }
+      const hasPending = Boolean(latestPendingMarker && latestPendingMarker !== getReviewLogsSeenMarker(ctx));
       const hasUnreadLevelUp = await hasStaffUnreadLevelUpNotifications(ctx);
       setNavNotificationDot("review-logs.html", hasPending || hasUnreadLevelUp);
       setNavNotificationDot("my-points.html", false);
