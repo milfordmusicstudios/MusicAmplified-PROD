@@ -1257,8 +1257,6 @@ const recognitionExportElements = {
   dateTo: document.getElementById("recognitionExportDateTo"),
   sort: document.getElementById("recognitionExportSort"),
   includeDates: document.getElementById("recognitionExportIncludeDates"),
-  includeTeacher: document.getElementById("recognitionExportIncludeTeacher"),
-  includeInstrument: document.getElementById("recognitionExportIncludeInstrument"),
   includePoints: document.getElementById("recognitionExportIncludePoints"),
   onlyUnrecognized: document.getElementById("recognitionExportOnlyUnrecognized"),
   includeInactive: document.getElementById("recognitionExportIncludeInactive")
@@ -1497,11 +1495,13 @@ const getValidRecognitionNotificationRows = (notifications = [], options = {}) =
 const toRecognitionExportRow = (row) => {
   const student = getNotificationStudentName(row).trim();
   const userId = getNotificationUserId(row);
+  const studentRecord = getRecognitionExportRosterMatchFor(student, userId);
   const createdAt = new Date(row?.created_at || "");
   const totalPoints = getRecognitionTotalPointsFor(student, userId);
   return {
     source: row,
     userId,
+    studentUserId: studentRecord?.id || "",
     student,
     level: getNotificationLevelNumber(row),
     totalPoints,
@@ -1596,8 +1596,6 @@ const getRecognitionExportColumns = (options, rows) => {
       ? [{ key: "recognitionDate", label: "Recognition Date", value: (row) => formatRecognitionExportDate(row.recognitionDate) }]
       : [])
   ];
-  if (options.includeTeacher) columns.push({ key: "teacher", label: "Teacher", value: (row) => getRecognitionTeacherText(row.student) });
-  if (options.includeInstrument) columns.push({ key: "instrument", label: "Instrument", value: (row) => getRecognitionInstrumentText(row.student) });
   if (options.includePoints) columns.push({ key: "totalPoints", label: "Total Points", value: (row) => row.totalPoints });
   return columns;
 };
@@ -2219,36 +2217,58 @@ async function loadRecognitionExportRoster() {
   if (recognitionExportRosterLoaded) return recognitionExportRoster;
   recognitionExportRosterLoaded = true;
   try {
-    const { data: students, error: studentsError } = await supabase
-      .from("users")
-      .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at, points, level, instrument, instrumentName, primaryInstrument, primary_instrument")
-      .eq("studio_id", viewerContext.studioId);
-    if (studentsError) throw studentsError;
+    let students = [];
+    const { data: rosterRows, error: rosterError } = await supabase.rpc("get_manage_users_for_studio", {
+      p_studio_id: viewerContext.studioId
+    });
+    if (rosterError) {
+      console.warn("[ReviewLogs] recognition roster RPC failed; falling back to users select", rosterError);
+      const { data: fallbackStudents, error: studentsError } = await supabase
+        .from("users")
+        .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at, points, level, instrument, instrumentName, primaryInstrument, primary_instrument")
+        .eq("studio_id", viewerContext.studioId);
+      if (studentsError) throw studentsError;
+      students = fallbackStudents || [];
+    } else {
+      students = rosterRows || [];
+    }
 
     const { data: approvedLogs, error: logsError } = await supabase
       .from("logs")
       .select("userId, points")
       .eq("studio_id", viewerContext.studioId)
       .eq("status", "approved");
-    if (logsError) throw logsError;
+    if (logsError) console.warn("[ReviewLogs] approved log totals unavailable for recognition export", logsError);
     const approvedPointsByUserId = new Map();
-    (approvedLogs || []).forEach((log) => {
+    (logsError ? [] : approvedLogs || []).forEach((log) => {
       const userId = String(log?.userId || "").trim();
       const points = Number(log?.points || 0);
       if (!userId || !Number.isFinite(points)) return;
       approvedPointsByUserId.set(userId, Number(approvedPointsByUserId.get(userId) || 0) + points);
     });
 
-    const { data: staffRows } = await supabase
-      .from("users")
-      .select("id, firstName, lastName, email, roles")
-      .eq("studio_id", viewerContext.studioId);
+    let staffRows = students || [];
+    if (rosterError) {
+      const { data: fallbackStaffRows } = await supabase
+        .from("users")
+        .select("id, firstName, lastName, email, roles")
+        .eq("studio_id", viewerContext.studioId);
+      staffRows = fallbackStaffRows || [];
+    }
     const staffNameById = new Map((staffRows || []).map((row) => [String(row.id), getQuickAddStudentName(row)]));
 
     recognitionExportRoster = (students || [])
       .filter((row) => {
         const roles = Array.isArray(row.roles) ? row.roles : [row.roles];
-        return roles.map((role) => String(role || "").toLowerCase()).includes("student");
+        const membershipRoles = Array.isArray(row.membership_roles) ? row.membership_roles : [row.membership_roles];
+        const identityRoles = Array.isArray(row.identity_roles) ? row.identity_roles : [row.identity_roles];
+        const roleValues = [...roles, ...membershipRoles, ...identityRoles]
+          .map((role) => String(role || "").toLowerCase())
+          .filter(Boolean);
+        const hasStudentRole = roleValues.includes("student");
+        const isStaffOnly = roleValues.some((role) => ["owner", "admin", "teacher"].includes(role)) && !hasStudentRole;
+        const studentName = getQuickAddStudentName(row);
+        return studentName && studentName !== "Student" && studentName.toLowerCase() !== "milford music" && (hasStudentRole || !isStaffOnly);
       })
       .map((row) => ({
         ...row,
@@ -2336,8 +2356,6 @@ function resetRecognitionExportOptions() {
   if (recognitionExportElements.dateFrom) recognitionExportElements.dateFrom.value = "";
   if (recognitionExportElements.dateTo) recognitionExportElements.dateTo.value = "";
   if (recognitionExportElements.includeDates) recognitionExportElements.includeDates.checked = true;
-  if (recognitionExportElements.includeTeacher) recognitionExportElements.includeTeacher.checked = false;
-  if (recognitionExportElements.includeInstrument) recognitionExportElements.includeInstrument.checked = false;
   if (recognitionExportElements.includePoints) recognitionExportElements.includePoints.checked = false;
   if (recognitionExportElements.onlyUnrecognized) recognitionExportElements.onlyUnrecognized.checked = false;
   if (recognitionExportElements.includeInactive) recognitionExportElements.includeInactive.checked = false;
@@ -2361,8 +2379,6 @@ function collectRecognitionExportOptions() {
     dateFrom: recognitionExportElements.dateFrom?.value || "",
     dateTo: recognitionExportElements.dateTo?.value || "",
     includeDates: recognitionExportElements.includeDates?.checked !== false,
-    includeTeacher: Boolean(recognitionExportElements.includeTeacher?.checked),
-    includeInstrument: Boolean(recognitionExportElements.includeInstrument?.checked),
     includePoints: Boolean(recognitionExportElements.includePoints?.checked),
     onlyUnrecognized: Boolean(recognitionExportElements.onlyUnrecognized?.checked),
     includeInactive: Boolean(recognitionExportElements.includeInactive?.checked)
@@ -2491,70 +2507,6 @@ function createNotificationAdminControls(statusText = "") {
   });
   controls.appendChild(exportButton);
 
-  if (!viewerContext?.isAdmin) {
-    controls.appendChild(status);
-    return controls;
-  }
-
-  const button = document.createElement("button");
-  button.id = "recalculateNotificationsBtn";
-  button.className = "blue-button";
-  button.type = "button";
-  button.textContent = "Recalculate Notifications";
-
-  button.addEventListener("click", async () => {
-    if (!confirm("This will rebuild missing level-completion notifications. Continue?")) return;
-    button.disabled = true;
-    status.textContent = "Recalculating...";
-    try {
-      const { data, error } = await supabase.rpc("backfill_level_notifications_for_studio", {
-        p_studio_id: viewerContext.studioId
-      });
-      if (error) throw error;
-      const created = Number(data?.insertedNotifications ?? data?.inserted_notifications ?? 0);
-      const updatedTimestamps = Number(data?.updatedTimestamps ?? data?.updated_timestamps ?? data?.updatedNotificationTimestamps ?? 0);
-      const timestampUpdatesAttempted = Number(data?.timestampUpdatesAttempted ?? data?.timestamp_updates_attempted ?? 0);
-      const timestampUpdatesCompleted = Number(data?.timestampUpdatesCompleted ?? data?.timestamp_updates_completed ?? updatedTimestamps);
-      const attempted = Number(data?.attempted ?? timestampUpdatesAttempted);
-      const updated = Number(data?.updated ?? timestampUpdatesCompleted);
-      const duplicateGroupsFound = Number(data?.duplicateGroupsFound ?? data?.duplicate_groups_found ?? 0);
-      const unmatchedStudent = Number(data?.unmatched_student ?? data?.unmatchedStudent ?? 0);
-      const unmatchedLevel = Number(data?.unmatched_level ?? data?.unmatchedLevel ?? 0);
-      const noCrossingLog = Number(data?.no_crossing_log ?? data?.noCrossingLog ?? 0);
-      const preview = await fetchViewerNotifications(NOTIFICATION_FETCH_ADMIN_CAP);
-      if (preview.error) throw preview.error;
-      const rawPreviewCount = Array.isArray(preview.data) ? preview.data.length : 0;
-      const dedupedPreview = mergeNotificationRows([preview.data || []], NOTIFICATION_FETCH_ADMIN_CAP);
-      const hiddenDuplicates = Math.max(0, rawPreviewCount - dedupedPreview.length);
-      console.log("[ReviewLogs] notification backfill complete", {
-        rpc: "backfill_level_notifications_for_studio",
-        studioId: viewerContext.studioId,
-        result: data,
-        created,
-        attempted,
-        updated,
-        timestampUpdatesAttempted,
-        timestampUpdatesCompleted,
-        duplicateGroupsFound,
-        unmatchedStudent,
-        unmatchedLevel,
-        noCrossingLog,
-        hiddenDuplicates
-      });
-      await loadNotifications(
-        `Created ${created} notification${created === 1 ? "" : "s"}; updated ${updatedTimestamps} timestamp${updatedTimestamps === 1 ? "" : "s"}; hidden ${hiddenDuplicates} duplicate${hiddenDuplicates === 1 ? "" : "s"}. Unmatched: ${unmatchedStudent} student, ${unmatchedLevel} level, ${noCrossingLog} crossing log.`,
-        { resetPage: true, prefetchedNotifications: preview.data, prefetchedError: preview.error }
-      );
-      await updateNotificationsButtonState();
-      window.dispatchEvent(new Event("aa:notification-state-changed"));
-    } catch (error) {
-      console.error("[ReviewLogs] notification backfill failed", error);
-      status.textContent = "Recalculation failed: " + (error?.message || "Unknown error");
-      button.disabled = false;
-    }
-  });
-
-  controls.appendChild(button);
   controls.appendChild(status);
   return controls;
 }
@@ -2936,8 +2888,8 @@ function getQuickAddLocalDateString(dateLike) {
 }
 
 function getQuickAddStudentName(student) {
-  const first = student?.firstName || "";
-  const last = student?.lastName || "";
+  const first = student?.firstName || student?.first_name || "";
+  const last = student?.lastName || student?.last_name || "";
   return `${first} ${last}`.trim() || student?.email || "Student";
 }
 
