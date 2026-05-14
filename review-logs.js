@@ -1387,12 +1387,14 @@ const getRecognitionExportRosterMatch = (studentName) => {
 };
 
 const getRecognitionExportRosterMatchFor = (studentName, userId = "") => {
+  const byName = getRecognitionExportRosterMatch(studentName);
+  if (byName) return byName;
   const normalizedUserId = String(userId || "").trim();
   if (normalizedUserId) {
     const byId = recognitionExportRoster.find((row) => String(row?.id || "") === normalizedUserId);
     if (byId) return byId;
   }
-  return getRecognitionExportRosterMatch(studentName);
+  return null;
 };
 
 const isRecognitionRosterInactive = (studentName) => {
@@ -1424,14 +1426,29 @@ const getLevelMinPoints = (level) => {
   return Number.isFinite(value) ? value : 0;
 };
 
+const getLevelId = (level) => {
+  const candidates = [level?.level, level?.level_id, level?.levelNumber, level?.level_number, level?.id];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+};
+
+const getMinimumPointsForLevelId = (levelId) => {
+  const target = Number(levelId);
+  if (!Number.isFinite(target)) return 0;
+  const level = recognitionLevels.find((entry) => getLevelId(entry) === target);
+  return level ? getLevelMinPoints(level) : 0;
+};
+
 async function loadRecognitionLevels() {
   if (recognitionLevelsLoaded) return recognitionLevels;
   recognitionLevelsLoaded = true;
   try {
     const { data, error } = await supabase
       .from("levels")
-      .select("*")
-      .order("minPoints", { ascending: true });
+      .select("*");
     if (error) throw error;
     recognitionLevels = (Array.isArray(data) ? data : [])
       .sort((a, b) => getLevelMinPoints(a) - getLevelMinPoints(b));
@@ -1446,7 +1463,9 @@ async function loadRecognitionLevels() {
 const getRecognitionTotalPointsFor = (studentName, userId = "") => {
   const match = getRecognitionExportRosterMatchFor(studentName, userId);
   const value = Number(match?.totalPoints ?? match?.points ?? match?.total_points);
-  return Number.isFinite(value) ? value : "";
+  const currentLevelFloor = getMinimumPointsForLevelId(match?.level);
+  if (Number.isFinite(value)) return Math.max(value, currentLevelFloor);
+  return currentLevelFloor || "";
 };
 
 const getRecognitionPointsNeededForNextLevelFor = (studentName, userId = "") => {
@@ -1549,8 +1568,8 @@ const getCurrentRecognitionNotificationRows = async () => {
 };
 
 const getRecognitionExportRows = async (options = {}) => {
-  await loadRecognitionExportRoster();
   await loadRecognitionLevels();
+  await loadRecognitionExportRoster();
   const notifications = await getCurrentRecognitionNotificationRows();
   const scopedOptions = {
     includeInactive: Boolean(options.includeInactive),
@@ -2202,9 +2221,23 @@ async function loadRecognitionExportRoster() {
   try {
     const { data: students, error: studentsError } = await supabase
       .from("users")
-      .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at, points, instrument, instrumentName, primaryInstrument, primary_instrument")
+      .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at, points, level, instrument, instrumentName, primaryInstrument, primary_instrument")
       .eq("studio_id", viewerContext.studioId);
     if (studentsError) throw studentsError;
+
+    const { data: approvedLogs, error: logsError } = await supabase
+      .from("logs")
+      .select("userId, points")
+      .eq("studio_id", viewerContext.studioId)
+      .eq("status", "approved");
+    if (logsError) throw logsError;
+    const approvedPointsByUserId = new Map();
+    (approvedLogs || []).forEach((log) => {
+      const userId = String(log?.userId || "").trim();
+      const points = Number(log?.points || 0);
+      if (!userId || !Number.isFinite(points)) return;
+      approvedPointsByUserId.set(userId, Number(approvedPointsByUserId.get(userId) || 0) + points);
+    });
 
     const { data: staffRows } = await supabase
       .from("users")
@@ -2219,7 +2252,12 @@ async function loadRecognitionExportRoster() {
       })
       .map((row) => ({
         ...row,
-        totalPoints: Number.isFinite(Number(row.points)) ? Number(row.points) : 0,
+        approvedTotalPoints: Number(approvedPointsByUserId.get(String(row.id)) || 0),
+        totalPoints: Math.max(
+          Number.isFinite(Number(row.points)) ? Number(row.points) : 0,
+          Number(approvedPointsByUserId.get(String(row.id)) || 0),
+          getMinimumPointsForLevelId(row.level)
+        ),
         teacherNames: Array.isArray(row.teacherIds)
           ? row.teacherIds.map((id) => staffNameById.get(String(id))).filter(Boolean)
           : []
@@ -2523,8 +2561,8 @@ function createNotificationAdminControls(statusText = "") {
 
 async function loadNotifications(statusText = "", options = {}) {
   notificationsSection.innerHTML = "<p>Loading notifications...</p>";
-  await loadRecognitionExportRoster();
   await loadRecognitionLevels();
+  await loadRecognitionExportRoster();
   let notificationCurrentPage = options?.resetPage ? 1 : 1;
   let notificationPageSize = Number(document.getElementById("logsPerPage")?.value || DEFAULT_NOTIFICATION_PAGE_SIZE);
   if (!Number.isFinite(notificationPageSize) || notificationPageSize <= 0) notificationPageSize = DEFAULT_NOTIFICATION_PAGE_SIZE;
