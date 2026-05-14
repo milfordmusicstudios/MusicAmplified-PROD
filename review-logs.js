@@ -2,6 +2,7 @@ import { supabase } from "./supabaseClient.js";
 import { createLevelCompletedNotification, fetchStudentLevelSnapshots, getCategoryDefaultPoints, getViewerContext, recalculateUserPoints, recalculateUsersAfterApprovedBatch } from './utils.js';
 import { ensureStudioContextAndRoute } from "./studio-routing.js";
 import { createTeacherAdminTutorial } from "./student-tutorial.js";
+import { getTeacherLogPrompts, getTeacherPointCategories } from "./log-prompts.js";
 const dispatchTutorialAction = (action) => {
   if (!action) return;
   window.dispatchEvent(new CustomEvent(String(action)));
@@ -2772,7 +2773,10 @@ const quickAddStudentSearch = document.getElementById("quickAddStudentSearch");
 const quickAddStudentsSelect = document.getElementById("quickAddStudents");
 const quickAddStudentsDropdown = document.getElementById("quickAddStudentsDropdown");
 const quickAddStudentsSelected = document.getElementById("quickAddStudentsSelected");
+const quickAddPromptGrid = document.getElementById("quickAddPromptGrid");
 const quickAddCategory = document.getElementById("quickAddCategory");
+const quickAddMoreCategoriesToggle = document.getElementById("quickAddMoreCategoriesToggle");
+const quickAddMoreCategoriesPanel = document.getElementById("quickAddMoreCategoriesPanel");
 const quickAddCalendar = document.getElementById("quickAddCalendar");
 const quickAddCalMonthLabel = document.getElementById("quickAddCalMonthLabel");
 const quickAddCalPrev = document.getElementById("quickAddCalPrev");
@@ -2788,6 +2792,9 @@ let quickAddRoster = [];
 const quickAddSelectedStudentIds = new Set();
 const quickAddSelectedDates = new Set();
 const quickAddCategoryDefaults = new Map();
+let quickAddPointsManuallyEdited = false;
+let quickAddSelectedPromptKey = "";
+let quickAddSelectedPromptCategory = "";
 
 const quickAddMonthNames = [
   "January", "February", "March", "April", "May", "June",
@@ -2840,26 +2847,71 @@ function getQuickAddCategoryDefaultPoints(categoryName) {
   return getCategoryDefaultPoints(normalized, null);
 }
 
-function syncQuickAddPoints() {
-  if (!quickAddCategory || !quickAddPoints) return;
-  const category = String(quickAddCategory.value || "").trim().toLowerCase();
+function syncQuickAddPoints({ force = false } = {}) {
+  if (!quickAddPoints) return;
+  const category = String(quickAddSelectedPromptCategory || quickAddCategory?.value || "").trim().toLowerCase();
   const isPractice = category === "practice";
   const defaultPoints = getQuickAddCategoryDefaultPoints(category);
 
+  quickAddPoints.disabled = false;
   if (isPractice) {
-    quickAddPoints.value = "5";
-    quickAddPoints.disabled = true;
+    if (force || !quickAddPointsManuallyEdited) quickAddPoints.value = "5";
     if (quickAddPracticePointsNote) quickAddPracticePointsNote.style.display = "block";
     return;
   }
 
-  quickAddPoints.disabled = false;
   if (quickAddPracticePointsNote) quickAddPracticePointsNote.style.display = "none";
-  if (defaultPoints !== null) {
+  if (defaultPoints !== null && (force || !quickAddPointsManuallyEdited)) {
     quickAddPoints.value = String(defaultPoints);
-  } else if (!category) {
+  } else if (!category && (force || !quickAddPointsManuallyEdited)) {
     quickAddPoints.value = "";
   }
+}
+
+function setQuickAddPromptActive(key) {
+  quickAddSelectedPromptKey = String(key || "");
+  quickAddPromptGrid?.querySelectorAll("[data-quickadd-prompt]").forEach((button) => {
+    const active = String(button.getAttribute("data-quickadd-prompt") || "") === quickAddSelectedPromptKey;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function applyQuickAddPrompt(prompt) {
+  if (!prompt || !quickAddPoints) return;
+  const category = String(prompt.category || "").trim().toLowerCase();
+  quickAddSelectedPromptCategory = category;
+  if (quickAddCategory) quickAddCategory.value = "";
+  quickAddPoints.disabled = false;
+  if (Number.isFinite(Number(prompt.points))) quickAddPoints.value = String(prompt.points);
+  if (quickAddNotes && !String(quickAddNotes.value || "").trim() && prompt.notesPrompt) {
+    quickAddNotes.placeholder = prompt.notesPrompt;
+  }
+  quickAddPointsManuallyEdited = false;
+  setQuickAddPromptActive(prompt.key);
+  if (quickAddPracticePointsNote) quickAddPracticePointsNote.style.display = category === "practice" ? "block" : "none";
+}
+
+function renderQuickAddPromptGrid() {
+  if (!quickAddPromptGrid) return;
+  quickAddPromptGrid.innerHTML = getTeacherLogPrompts().map(prompt => `
+    <button
+      type="button"
+      class="staff-prompt-button"
+      data-quickadd-prompt="${prompt.key}"
+      aria-pressed="false"
+    >
+      <span class="staff-prompt-icon" aria-hidden="true">${prompt.icon || ""}</span>
+      <span class="staff-prompt-label">${prompt.label}</span>
+    </button>
+  `).join("");
+  quickAddPromptGrid.querySelectorAll("[data-quickadd-prompt]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = String(button.getAttribute("data-quickadd-prompt") || "");
+      const prompt = getTeacherLogPrompts().find(item => item.key === key);
+      applyQuickAddPrompt(prompt);
+    });
+  });
 }
 
 function syncQuickAddStudentSelect() {
@@ -3014,9 +3066,17 @@ function resetQuickAddModalState() {
   if (quickAddStudentsDropdown) quickAddStudentsDropdown.setAttribute("hidden", "");
   if (quickAddCategory) quickAddCategory.value = "";
   if (quickAddNotes) quickAddNotes.value = "";
+  if (quickAddNotes) quickAddNotes.placeholder = "Optional note";
   if (quickAddPoints) {
     quickAddPoints.value = "";
     quickAddPoints.disabled = false;
+  }
+  quickAddPointsManuallyEdited = false;
+  setQuickAddPromptActive("");
+  if (quickAddMoreCategoriesPanel) quickAddMoreCategoriesPanel.setAttribute("hidden", "");
+  if (quickAddMoreCategoriesToggle) {
+    quickAddMoreCategoriesToggle.setAttribute("aria-expanded", "false");
+    quickAddMoreCategoriesToggle.textContent = "+ More categories";
   }
   if (quickAddPracticePointsNote) quickAddPracticePointsNote.style.display = "none";
   quickAddCalendarView.year = quickAddToday.getFullYear();
@@ -3039,31 +3099,25 @@ async function loadQuickAddCategories() {
 
   if (error) {
     console.error("Quick Add categories failed:", error);
-    quickAddCategory.innerHTML = '<option value="">Error loading categories</option>';
-    quickAddCategory.disabled = true;
-    return;
   }
-
-  const blockedCategoryNames = new Set(["batch_practice"]);
-  const visibleCategories = (categories || []).filter(
-    (cat) => !blockedCategoryNames.has(String(cat?.name || "").toLowerCase())
-  );
 
   quickAddCategory.innerHTML = '<option value="">Select category</option>';
   quickAddCategoryDefaults.clear();
-  visibleCategories.forEach((cat) => {
+  (categories || []).forEach((cat) => {
     const name = String(cat?.name || "").trim();
     if (!name) return;
     const normalized = name.toLowerCase();
     const defaultPoints = extractQuickAddDefaultPoints(cat, normalized);
     if (defaultPoints !== null) quickAddCategoryDefaults.set(normalized, defaultPoints);
+  });
 
+  getTeacherPointCategories().forEach((cat) => {
     const option = document.createElement("option");
-    option.value = name;
-    option.textContent = name;
+    option.value = cat.value;
+    option.textContent = cat.label;
     quickAddCategory.appendChild(option);
   });
-  quickAddCategory.disabled = visibleCategories.length === 0;
+  quickAddCategory.disabled = false;
 }
 
 async function loadQuickAddStudents() {
@@ -3125,6 +3179,7 @@ if (quickAddBtn) {
     resetQuickAddModalState();
     await loadQuickAddCategories();
     await loadQuickAddStudents();
+    renderQuickAddPromptGrid();
     syncQuickAddPoints();
   });
 }
@@ -3146,7 +3201,32 @@ if (quickAddModal) {
 }
 
 if (quickAddCategory) {
-  quickAddCategory.addEventListener("change", syncQuickAddPoints);
+  quickAddCategory.addEventListener("change", () => {
+    quickAddSelectedPromptCategory = "";
+    setQuickAddPromptActive("");
+    syncQuickAddPoints();
+  });
+}
+
+if (quickAddMoreCategoriesToggle && quickAddMoreCategoriesPanel) {
+  quickAddMoreCategoriesToggle.addEventListener("click", () => {
+    const isOpen = !quickAddMoreCategoriesPanel.hasAttribute("hidden");
+    if (isOpen) {
+      quickAddMoreCategoriesPanel.setAttribute("hidden", "");
+      quickAddMoreCategoriesToggle.setAttribute("aria-expanded", "false");
+      quickAddMoreCategoriesToggle.textContent = "+ More categories";
+    } else {
+      quickAddMoreCategoriesPanel.removeAttribute("hidden");
+      quickAddMoreCategoriesToggle.setAttribute("aria-expanded", "true");
+      quickAddMoreCategoriesToggle.textContent = "Hide categories";
+    }
+  });
+}
+
+if (quickAddPoints) {
+  quickAddPoints.addEventListener("input", () => {
+    quickAddPointsManuallyEdited = true;
+  });
 }
 
 if (quickAddStudentSearch) {
@@ -3199,7 +3279,7 @@ async function saveQuickAddLogs({ closeAfterSave = false } = {}) {
   setQuickAddStatus("");
   const selectedIds = Array.from(quickAddSelectedStudentIds);
   const activeStudioId = String(viewerContext?.studioId || "").trim();
-  const category = String(quickAddCategory?.value || "").trim();
+  const category = String(quickAddSelectedPromptCategory || quickAddCategory?.value || "").trim();
   const categoryKey = category.toLowerCase();
   const selectedDates = Array.from(quickAddSelectedDates);
   const notes = quickAddNotes?.value?.trim() || "";
@@ -3221,7 +3301,7 @@ async function saveQuickAddLogs({ closeAfterSave = false } = {}) {
     return;
   }
 
-  const resolvedPoints = categoryKey === "practice" ? 5 : Number(quickAddPoints?.value);
+  const resolvedPoints = Number(quickAddPoints?.value);
   if (!Number.isFinite(resolvedPoints) || resolvedPoints < 0) {
     setQuickAddStatus("Enter valid points.", "error");
     return;

@@ -928,6 +928,98 @@ body.is-admin .ql-category-pop select {
   background: #ffffff;
 }
 
+.staff-prompt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 6px 0 12px;
+}
+
+.staff-prompt-button {
+  position: relative;
+  min-height: 58px;
+  width: 100%;
+  border: 1px solid rgba(11, 79, 138, 0.22);
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0b4f8a;
+  font-size: 13.5px;
+  font-weight: 800;
+  line-height: 1.15;
+  padding: 10px 26px 10px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.staff-prompt-button.is-active,
+.staff-prompt-button[aria-pressed="true"] {
+  border-color: #1677c8;
+  background: rgba(18,121,200,0.16);
+  box-shadow: 0 0 0 3px rgba(18,121,200,0.12);
+  color: #073f70;
+}
+
+.staff-prompt-button.is-active::after,
+.staff-prompt-button[aria-pressed="true"]::after {
+  content: "✓";
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #1677c8;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.staff-prompt-icon {
+  flex: 0 0 auto;
+  min-width: 24px;
+  color: #0b4f8a;
+  font-size: 19px;
+  font-weight: 900;
+  line-height: 1;
+  text-align: center;
+}
+
+.staff-prompt-label {
+  min-width: 0;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: manual;
+  text-wrap: balance;
+}
+
+.staff-more-categories-toggle {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #0b4f8a;
+  font-weight: 900;
+  text-align: left;
+  cursor: pointer;
+}
+
+.staff-more-categories-panel {
+  margin-top: 4px;
+}
+
+@media (min-width: 760px) {
+  .staff-prompt-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 body.is-staff .staff-calendar-toggle,
 body.is-admin .staff-calendar-toggle {
   width: 100%;

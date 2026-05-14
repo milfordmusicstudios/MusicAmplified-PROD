@@ -298,10 +298,13 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
   };
 
   const renderHomeSurface = () => {
+    const tabRows = getTabRows();
+    const currentCount = tabRows.find(tab => tab.key === "current")?.rows.length || 0;
+    const completedCount = tabRows.find(tab => tab.key === "completed")?.rows.length || 0;
+    const expiredCount = tabRows.find(tab => tab.key === "expired")?.rows.length || 0;
+    const hasAnyChallenge = currentCount > 0 || completedCount > 0 || expiredCount > 0;
     const { buckets } = derive();
     const newCount = buckets.newVisible.length;
-    const activeCount = buckets.activeVisible.length;
-    const completedCount = buckets.completed.length;
     const formatCountLabel = (count, singular, plural) => `${count} ${count === 1 ? singular : plural}`;
 
     if (newCount > 0) {
@@ -319,16 +322,13 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
       return;
     }
 
-    noticeMount.innerHTML = `<div class="student-challenges-notice-spacer" aria-hidden="true"></div>`;
-    if (activeCount > 0) {
-      subtleMount.innerHTML = `<button id="studentChallengesSubtleBtn" type="button" class="student-challenges-pill-link">${formatCountLabel(activeCount, "Active Challenge", "Active Challenges")}</button>`;
+    noticeMount.innerHTML = hasAnyChallenge ? "" : `<div class="student-challenges-notice-spacer" aria-hidden="true"></div>`;
+    if (hasAnyChallenge) {
+      const label = currentCount > 0
+        ? formatCountLabel(currentCount, "Current Challenge", "Current Challenges")
+        : "Challenges";
+      subtleMount.innerHTML = `<button id="studentChallengesSubtleBtn" type="button" class="student-challenges-pill-link">${label}</button>`;
       document.getElementById("studentChallengesSubtleBtn")?.addEventListener("click", () => openListAt("current"));
-      return;
-    }
-
-    if (completedCount > 0) {
-      subtleMount.innerHTML = `<button id="studentChallengesSubtleBtn" type="button" class="student-challenges-subtle-link">Completed challenges (${completedCount})</button>`;
-      document.getElementById("studentChallengesSubtleBtn")?.addEventListener("click", () => openListAt("completed"));
       return;
     }
 
@@ -407,7 +407,12 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
 
     const currentTab = tabRows.find(tab => tab.key === activeTab) || tabRows[0];
     if (!currentTab.rows.length) {
-      listEl.innerHTML = `<div class="student-challenge-empty">No challenges in this tab.</div>`;
+      const emptyText = currentTab.key === "completed"
+        ? "No completed challenges yet."
+        : currentTab.key === "expired"
+          ? "No expired challenges."
+          : "No current challenges right now.";
+      listEl.innerHTML = `<div class="student-challenge-empty">${emptyText}</div>`;
     } else {
       listEl.innerHTML = currentTab.rows.map(row => {
         if (row?.kind === "weekly") return renderWeeklyRow(row, currentTab.key);
@@ -515,21 +520,38 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
   };
 
   const refreshAll = async () => {
-    assignments = await fetchMyChallengeAssignments(studio, targetStudentId);
-    weeklyChallenge = await getCurrentChallenge();
-    weeklyCompletion = weeklyChallenge
-      ? await fetchWeeklyChallengeCompletion(studio, targetStudentId, weeklyChallenge.id)
-      : null;
-    weeklyCompletions = await fetchWeeklyChallengeCompletions(studio, targetStudentId);
+    try {
+      assignments = await fetchMyChallengeAssignments(studio, targetStudentId);
+    } catch (error) {
+      console.error("[StudentChallengesUI] failed fetching teacher challenges", error);
+      throw error;
+    }
+
+    try {
+      weeklyChallenge = await getCurrentChallenge();
+      weeklyCompletion = weeklyChallenge
+        ? await fetchWeeklyChallengeCompletion(studio, targetStudentId, weeklyChallenge.id)
+        : null;
+      weeklyCompletions = await fetchWeeklyChallengeCompletions(studio, targetStudentId);
+    } catch (error) {
+      console.error("[StudentChallengesUI] failed fetching weekly challenges", error);
+      throw error;
+    }
+
     const { buckets } = derive();
+    const tabRows = getTabRows();
+    const currentTeacherCount = buckets.current.length;
+    const completedCount = tabRows.find(tab => tab.key === "completed")?.rows.length || 0;
+    const expiredCount = buckets.expired.length;
     console.log("[StudentChallengesUI] counts", {
-      total: assignments.length,
-      weekly: weeklyChallenge ? 1 : 0,
+      fetchedTeacherChallengesCount: assignments.length,
+      currentTeacherCount,
+      weeklyChallengeLoaded: Boolean(weeklyChallenge),
       newVisible: buckets.newVisible.length,
       activeVisible: buckets.activeVisible.length,
-      current: buckets.current.length,
-      completed: buckets.completed.length,
-      expired: buckets.expired.length
+      current: tabRows.find(tab => tab.key === "current")?.rows.length || 0,
+      completed: completedCount,
+      expired: expiredCount
     });
 
     const creatorIds = Array.from(new Set(

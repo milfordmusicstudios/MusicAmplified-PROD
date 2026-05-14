@@ -116,17 +116,22 @@
             <select id="quickAddStudents" multiple hidden aria-hidden="true"></select>
           </div>
 
-          <div class="ql-category-pop">
-            <label for="quickAddCategory">Category</label>
+          <label>Quick prompts</label>
+          <div id="quickAddPromptGrid" class="staff-prompt-grid"></div>
+
+          <button id="quickAddMoreCategoriesToggle" class="staff-more-categories-toggle" type="button" aria-expanded="false">
+            + More categories
+          </button>
+          <div id="quickAddMoreCategoriesPanel" class="ql-category-pop staff-more-categories-panel" hidden>
+            <label for="quickAddCategory">Other category</label>
             <select id="quickAddCategory" class="white-input">
-          <option value="">Select category</option>
-          <option value="practice">Practice</option>
-          <option value="participation">Participation</option>
-          <option value="performance">Performance</option>
-          <option value="personal">Personal</option>
-          <option value="proficiency">Proficiency</option>
-        </select>
+              <option value="">Select category</option>
+            </select>
           </div>
+
+          <label for="quickAddPoints">Points</label>
+          <input type="number" id="quickAddPoints" class="white-input" placeholder="Enter points" />
+          <p id="quickAddPracticePointsNote" class="staff-msg" style="display:none;">Practice category will automatically award 5 points per day.</p>
 
           <label>Dates</label>
           <button id="quickAddCalendarToggle" class="blue-button staff-calendar-toggle" type="button">
@@ -145,10 +150,6 @@
               <div id="quickAddCalendar" class="calendar-grid"></div>
             </div>
           </div>
-
-          <label for="quickAddPoints">Points</label>
-          <input type="number" id="quickAddPoints" class="white-input" placeholder="Enter points" />
-          <p id="quickAddPracticePointsNote" class="staff-msg" style="display:none;">Practice category will automatically award 5 points per day.</p>
 
           <label for="quickAddNotes">Notes</label>
           <textarea id="quickAddNotes" class="white-input" placeholder="Optional note"></textarea>

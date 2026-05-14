@@ -1,6 +1,7 @@
 import { supabase } from "./supabaseClient.js";
 import { recalculateUserPoints, renderActiveStudentHeader } from './utils.js';
 import { ensureStudioContextAndRoute } from "./studio-routing.js";
+import { getTeacherLogPrompts, getTeacherPointCategories } from "./log-prompts.js";
 
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -28,8 +29,55 @@ document.addEventListener("DOMContentLoaded", async () => {
   const pointsInput = document.getElementById("logPoints");
   const notesInput = document.getElementById("logNote");
   const dateInput = document.getElementById("logDate");
+  const promptRow = document.getElementById("teacherPromptRow");
+  const promptGrid = document.getElementById("logPromptGrid");
   const submitBtn = document.querySelector("button[type='submit']");
   const cancelBtn = document.querySelector("button[type='button']");
+  const isStaffRole = activeRole === "admin" || activeRole === "teacher";
+  let pointsManuallyEdited = false;
+  let selectedPromptKey = "";
+  let selectedPromptCategory = "";
+
+  const setPromptActive = (key) => {
+    selectedPromptKey = String(key || "");
+    promptGrid?.querySelectorAll("[data-log-prompt]").forEach(button => {
+      const active = String(button.getAttribute("data-log-prompt") || "") === selectedPromptKey;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  };
+
+  const applyTeacherPrompt = (prompt) => {
+    if (!prompt || !categorySelect || !pointsInput) return;
+    const category = String(prompt.category || "").trim().toLowerCase();
+    selectedPromptCategory = category;
+    categorySelect.value = "";
+    if (Number.isFinite(Number(prompt.points))) pointsInput.value = String(prompt.points);
+    pointsInput.disabled = false;
+    pointsManuallyEdited = false;
+    if (notesInput && !String(notesInput.value || "").trim() && prompt.notesPrompt) {
+      notesInput.placeholder = prompt.notesPrompt;
+    }
+    setPromptActive(prompt.key);
+  };
+
+  const renderTeacherPromptGrid = () => {
+    if (!promptGrid || !promptRow || !isStaffRole) return;
+    promptRow.style.display = "";
+    promptGrid.innerHTML = getTeacherLogPrompts().map(prompt => `
+      <button type="button" class="staff-prompt-button" data-log-prompt="${prompt.key}" aria-pressed="false">
+        <span class="staff-prompt-icon" aria-hidden="true">${prompt.icon || ""}</span>
+        <span class="staff-prompt-label">${prompt.label}</span>
+      </button>
+    `).join("");
+    promptGrid.querySelectorAll("[data-log-prompt]").forEach(button => {
+      button.addEventListener("click", () => {
+        const key = String(button.getAttribute("data-log-prompt") || "");
+        const prompt = getTeacherLogPrompts().find(item => item.key === key);
+        applyTeacherPrompt(prompt);
+      });
+    });
+  };
 
   // ✅ Default date to today
   if (dateInput) {
@@ -38,7 +86,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // ✅ Hide student dropdown & points input for students
-  if (!(activeRole === "admin" || activeRole === "teacher")) {
+  if (!isStaffRole) {
     if (studentSelect) studentSelect.closest("tr").style.display = "none";
     if (pointsInput) pointsInput.closest("tr").style.display = "none";
   }
@@ -61,14 +109,17 @@ const PREFILL_MODE = urlParams.get('mode');
   if (catErr) console.error("Error loading categories:", catErr.message);
 
   if (categories && categorySelect) {
-    const blockedCategoryNames = new Set(["batch_practice"]);
-    const visibleCategories = categories.filter(cat => !blockedCategoryNames.has(String(cat?.name || "").toLowerCase()));
     categorySelect.innerHTML = "<option value=''>Category</option>";
+    const visibleCategories = isStaffRole
+      ? getTeacherPointCategories()
+      : categories
+          .map(cat => ({ value: cat.name, label: cat.name, icon: cat.icon }))
+          .filter(cat => String(cat?.value || "").trim().toLowerCase() !== "batch_practice");
     visibleCategories.forEach(cat => {
       const opt = document.createElement("option");
-      opt.value = cat.name;
+      opt.value = cat.value;
       opt.dataset.icon = cat.icon;
-      opt.textContent = cat.name;
+      opt.textContent = cat.label;
       categorySelect.appendChild(opt);
     });
 
@@ -105,14 +156,25 @@ categorySelect.addEventListener("change", () => {
       previewImage.src = selected ? `images/categories/${selected.toLowerCase()}.png` : "images/categories/allCategories.png";
       if (selected === "practice") {
         pointsInput.value = 5;
-      } else if (pointsInput && (activeRole === "admin" || activeRole === "teacher")) {
+      } else if (pointsInput && isStaffRole && !pointsManuallyEdited) {
         pointsInput.value = "";
       }
     });
   }
 
+  pointsInput?.addEventListener("input", () => {
+    pointsManuallyEdited = true;
+  });
+
+  categorySelect?.addEventListener("change", () => {
+    selectedPromptCategory = "";
+    setPromptActive("");
+  });
+
+  renderTeacherPromptGrid();
+
   // ✅ Populate students only for teachers/admins
-  if ((activeRole === "admin" || activeRole === "teacher") && studentSelect) {
+  if (isStaffRole && studentSelect) {
     const { data: students, error: stuErr } = await supabase
       .from("users")
       .select("id, firstName, lastName, roles, teacherIds")
@@ -158,17 +220,17 @@ categorySelect.addEventListener("change", () => {
     submitBtn.addEventListener("click", async (e) => {
       e.preventDefault();
 
-      const category = categorySelect?.value;
+      const category = selectedPromptCategory || categorySelect?.value;
       const note = notesInput?.value.trim();
       const date = dateInput?.value;
 
       const targetUser =
-        (activeRole === "admin" || activeRole === "teacher") && studentSelect.value
+        isStaffRole && studentSelect.value
           ? studentSelect.value
           : user.id;
 
       let points = 5; // default for practice
-      if (activeRole === "admin" || activeRole === "teacher") {
+      if (isStaffRole) {
         const enteredPoints = parseInt(pointsInput?.value);
         if (!isNaN(enteredPoints)) points = enteredPoints;
       }
@@ -184,7 +246,7 @@ categorySelect.addEventListener("change", () => {
 
       // ✅ Determine status
       let status = "pending";
-      if (activeRole === "admin" || activeRole === "teacher" || category.toLowerCase() === "practice") {
+      if (isStaffRole || category.toLowerCase() === "practice") {
         status = "approved";
       }
 
@@ -253,7 +315,7 @@ setTimeout(() => {
         const today = new Date().toISOString().split("T")[0];
         dateInput.value = today;
       }
-      if (!(activeRole === "admin" || activeRole === "teacher")) {
+      if (!isStaffRole) {
         if (studentSelect) studentSelect.closest("tr").style.display = "none";
         if (pointsInput) pointsInput.closest("tr").style.display = "none";
       }

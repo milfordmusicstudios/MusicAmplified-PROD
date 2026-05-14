@@ -10,6 +10,7 @@ import { selectHeroBadge, normalizeHeroBadge } from './badgeHero.js';
 import { renderBadgeHeroHalfPanel } from './BadgeHeroHalfPanel.js';
 import { initBadgeHeroModal, openBadgeHeroModal } from './BadgeHeroModal.js';
 import { createStudentHomeTutorial, createTeacherAdminTutorial } from './student-tutorial.js';
+import { getStudentLogPrompts, getTeacherLogPrompts, getTeacherPointCategories } from './log-prompts.js';
 
 const qs = id => document.getElementById(id);
 const dispatchTutorialAction = (action) => {
@@ -31,96 +32,6 @@ let avatarMenuEventsBound = false;
 let studentTutorial = null;
 let teacherAdminTutorial = null;
 const HOME_INIT_LOADING_CLASS = "home-init-loading";
-const DEFAULT_STUDENT_LOG_PRESET_TYPES = [
-  {
-    key: "finishBook",
-    label: "Finish a book",
-    emoji: "📘",
-    logType: "fixed",
-    points: 50,
-    notesPrompt: "What book did you complete?",
-    notesRequired: true,
-    category: "proficiency"
-  },
-  {
-    key: "groupClass",
-    label: "Group class",
-    emoji: "👥",
-    logType: "fixed",
-    points: 50,
-    notesPrompt: "What class did you attend?",
-    notesRequired: true,
-    category: "participation"
-  },
-  {
-    key: "studioPerformance",
-    label: "Studio performances",
-    emoji: "🎤",
-    logType: "fixed",
-    points: 100,
-    notesPrompt: "What performance did you participate in?",
-    notesRequired: true,
-    category: "performance"
-  },
-  {
-    key: "outsidePerformance",
-    label: "Outside performances",
-    emoji: "🎬",
-    logType: "outside-performance",
-    points: 25,
-    notesPrompt: "What event did you perform at?",
-    notesRequired: true,
-    category: "performance"
-  },
-  {
-    key: "competition",
-    label: "Competition",
-    emoji: "🏅",
-    logType: "fixed",
-    points: 100,
-    notesPrompt: "Describe the competition.",
-    notesRequired: true,
-    category: "participation"
-  },
-  {
-    key: "festival",
-    label: "Festival",
-    emoji: "🏆",
-    logType: "festival",
-    category: "proficiency"
-  },
-  {
-    key: "memorization",
-    label: "Memorization",
-    emoji: "🧠",
-    logType: "memorization",
-    points: 2,
-    notesPrompt: "Name of piece.",
-    notesRequired: true,
-    category: "proficiency"
-  },
-  {
-    key: "theoryTechniqueTest",
-    label: "Theory/Technique test",
-    emoji: "📝",
-    logType: "fixed",
-    points: 50,
-    notesPrompt: "What level test did you complete?",
-    notesRequired: true,
-    category: "proficiency"
-  },
-  {
-    key: "personalGoal",
-    label: "Personal goal",
-    emoji: "🎯",
-    logType: "discretionary",
-    points: 5,
-    notesPrompt: "Describe the goal.",
-    notesRequired: true,
-    category: "personal"
-  }
-];
-
 function revealHomeAfterIdentity() {
   document.body.classList.remove(HOME_INIT_LOADING_CLASS);
 }
@@ -225,7 +136,7 @@ async function loadStudioQuickLogTypeSettings() {
 
 function getEnabledStudentQuickLogTypes(studioSettings = {}) {
   const savedPresets = studioSettings?.studentLogTypes?.presets || {};
-  const enabledPresets = DEFAULT_STUDENT_LOG_PRESET_TYPES.filter((preset) => {
+  const enabledPresets = getStudentLogPrompts().filter((preset) => {
     if (!(preset.key in savedPresets)) return true;
     return Boolean(savedPresets[preset.key]);
   });
@@ -243,7 +154,7 @@ function getEnabledStudentQuickLogTypes(studioSettings = {}) {
       return {
         key: `custom-${index}`,
         label,
-        emoji: "✨",
+        icon: "Custom",
         logType: "fixed",
         points: Math.round(points),
         notesPrompt: `Describe: ${label}`,
@@ -259,12 +170,12 @@ function getEnabledStudentQuickLogTypes(studioSettings = {}) {
 function renderStudentQuickLogTypeChips(types) {
   const grid = document.querySelector(".action-grid");
   if (!grid) return;
-  const chips = Array.isArray(types) && types.length ? types : DEFAULT_STUDENT_LOG_PRESET_TYPES;
+  const chips = Array.isArray(types) && types.length ? types : getStudentLogPrompts();
   const chipsMarkup = chips.map((item) => {
     const pointsAttr = Number.isFinite(item.points) ? ` data-points="${item.points}"` : "";
     const promptAttr = item.notesPrompt ? ` data-notes-prompt="${item.notesPrompt.replace(/"/g, "&quot;")}"` : "";
     const requiredAttr = typeof item.notesRequired === "boolean" ? ` data-notes-required="${item.notesRequired ? "true" : "false"}"` : "";
-    return `<button class="chip" data-log-type="${item.logType}"${pointsAttr}${requiredAttr}${promptAttr} data-category="${item.category}" data-hint="${item.label}">${item.emoji} ${item.label}</button>`;
+    return `<button class="chip" data-log-type="${item.logType}"${pointsAttr}${requiredAttr}${promptAttr} data-category="${item.category}" data-hint="${item.label}">${item.icon || ""} ${item.label}</button>`;
   }).join("");
 
   grid.innerHTML = `
@@ -2754,12 +2665,22 @@ function renderStaffQuickLogShell() {
           <select id="staffStudents" multiple disabled hidden aria-hidden="true"></select>
         </div>
 
-        <div class="ql-category-pop">
-          <label for="staffCategory">Category</label>
-          <select id="staffCategory" required disabled>
+        <label>Quick prompts</label>
+        <div id="staffPromptGrid" class="staff-prompt-grid"></div>
+
+        <button id="staffMoreCategoriesToggle" class="staff-more-categories-toggle" type="button" aria-expanded="false">
+          + More categories
+        </button>
+        <div id="staffMoreCategoriesPanel" class="ql-category-pop staff-more-categories-panel" hidden>
+          <label for="staffCategory">Other category</label>
+          <select id="staffCategory" disabled>
             <option value="">Loading...</option>
           </select>
         </div>
+
+        <label for="staffPoints">Points</label>
+        <input id="staffPoints" type="number" min="0" required />
+        <p id="staffPracticePointsNote" class="staff-msg" style="display:none;">Practice category will automatically award 5 points per day.</p>
 
         <label>Dates</label>
         <button id="staffCalendarToggle" class="blue-button staff-calendar-toggle" type="button">
@@ -2778,10 +2699,6 @@ function renderStaffQuickLogShell() {
             <div id="staffCalendar" class="calendar-grid"></div>
           </div>
         </div>
-
-        <label for="staffPoints">Points</label>
-        <input id="staffPoints" type="number" min="0" required />
-        <p id="staffPracticePointsNote" class="staff-msg" style="display:none;">Practice category will automatically award 5 points per day.</p>
 
         <label for="staffNotes">Notes</label>
         <input id="staffNotes" type="text" />
@@ -2915,6 +2832,9 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
   if (!form) return;
 
   const categorySelect = document.getElementById('staffCategory');
+  const promptGrid = document.getElementById('staffPromptGrid');
+  const moreCategoriesToggle = document.getElementById('staffMoreCategoriesToggle');
+  const moreCategoriesPanel = document.getElementById('staffMoreCategoriesPanel');
   const studentSelect = document.getElementById('staffStudents');
   const studentPicker = document.getElementById('staffStudentPicker');
   const studentSearchInput = document.getElementById('staffStudentsSearch');
@@ -2935,28 +2855,77 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
   const selectedDates = new Set();
   const selectedStudentIds = new Set();
   const categoryRowsByName = new Map();
+  let staffPointsManuallyEdited = false;
+  let selectedPromptKey = "";
+  let selectedPromptCategory = "";
   let practiceDatesByStudentId = new Map();
   let practiceDatesRequestToken = 0;
   let staffStudentRows = [];
 
-  const syncPracticePoints = () => {
-    if (!categorySelect || !pointsInput) return;
-    const categoryName = String(categorySelect.value || "").trim().toLowerCase();
+  const syncPracticePoints = ({ force = false } = {}) => {
+    if (!pointsInput) return;
+    const categoryName = String(selectedPromptCategory || categorySelect?.value || "").trim().toLowerCase();
     const isPractice = categoryName === "practice";
     const defaultPoints = getCategoryDefaultPoints(categoryName, categoryRowsByName.get(categoryName) || null);
+    pointsInput.disabled = false;
     if (isPractice) {
-      pointsInput.value = "5";
-      pointsInput.disabled = true;
+      if (force || !staffPointsManuallyEdited) pointsInput.value = "5";
       if (practicePointsNote) practicePointsNote.style.display = "block";
       return;
     }
-    pointsInput.disabled = false;
     if (practicePointsNote) practicePointsNote.style.display = "none";
-    if (defaultPoints !== null) {
+    if (defaultPoints !== null && (force || !staffPointsManuallyEdited)) {
       pointsInput.value = String(defaultPoints);
-    } else if (!categoryName) {
+    } else if (!categoryName && (force || !staffPointsManuallyEdited)) {
       pointsInput.value = "";
     }
+  };
+
+  const setStaffPromptActive = (key) => {
+    selectedPromptKey = String(key || "");
+    promptGrid?.querySelectorAll("[data-staff-prompt]").forEach((button) => {
+      const active = String(button.getAttribute("data-staff-prompt") || "") === selectedPromptKey;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  };
+
+  const applyStaffPrompt = (prompt) => {
+    if (!prompt || !pointsInput) return;
+    const category = String(prompt.category || "").trim().toLowerCase();
+    selectedPromptCategory = category;
+    if (categorySelect) categorySelect.value = "";
+    pointsInput.disabled = false;
+    if (Number.isFinite(Number(prompt.points))) pointsInput.value = String(prompt.points);
+    if (notesInput && !String(notesInput.value || "").trim() && prompt.notesPrompt) {
+      notesInput.placeholder = prompt.notesPrompt;
+    }
+    staffPointsManuallyEdited = false;
+    setStaffPromptActive(prompt.key);
+    if (practicePointsNote) practicePointsNote.style.display = category === "practice" ? "block" : "none";
+    void refreshPracticeDateCache();
+  };
+
+  const renderStaffPromptGrid = () => {
+    if (!promptGrid) return;
+    promptGrid.innerHTML = getTeacherLogPrompts().map(prompt => `
+      <button
+        type="button"
+        class="staff-prompt-button"
+        data-staff-prompt="${prompt.key}"
+        aria-pressed="false"
+      >
+        <span class="staff-prompt-icon" aria-hidden="true">${prompt.icon || ""}</span>
+        <span class="staff-prompt-label">${prompt.label}</span>
+      </button>
+    `).join("");
+    promptGrid.querySelectorAll("[data-staff-prompt]").forEach(button => {
+      button.addEventListener("click", () => {
+        const key = String(button.getAttribute("data-staff-prompt") || "");
+        const prompt = getTeacherLogPrompts().find(item => item.key === key);
+        applyStaffPrompt(prompt);
+      });
+    });
   };
 
   const getStudentName = (student) => {
@@ -2972,7 +2941,7 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
     });
   };
 
-  const isPracticeCategorySelected = () => String(categorySelect?.value || "").trim().toLowerCase() === "practice";
+  const isPracticeCategorySelected = () => String(selectedPromptCategory || categorySelect?.value || "").trim().toLowerCase() === "practice";
 
   const refreshPracticeDateCache = async () => {
     const requestToken = ++practiceDatesRequestToken;
@@ -3204,6 +3173,9 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
     }
     if (categorySelect) categorySelect.value = "";
     if (notesInput) notesInput.value = "";
+    if (notesInput) notesInput.placeholder = "";
+    staffPointsManuallyEdited = false;
+    setStaffPromptActive("");
     syncStudentSelect();
     renderSelectedStudents(staffStudentRows);
     syncPracticePoints();
@@ -3241,34 +3213,54 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
     });
   }
 
+  if (moreCategoriesToggle && moreCategoriesPanel) {
+    moreCategoriesToggle.addEventListener("click", () => {
+      const isOpen = !moreCategoriesPanel.hasAttribute("hidden");
+      if (isOpen) {
+        moreCategoriesPanel.setAttribute("hidden", "");
+        moreCategoriesToggle.setAttribute("aria-expanded", "false");
+        moreCategoriesToggle.textContent = "+ More categories";
+      } else {
+        moreCategoriesPanel.removeAttribute("hidden");
+        moreCategoriesToggle.setAttribute("aria-expanded", "true");
+        moreCategoriesToggle.textContent = "Hide categories";
+      }
+    });
+  }
+
   const { data: categories, error: catErr } = await loadCategoriesForStudio(studioId);
   if (catErr?.message) {
     setError(catErr.message);
   }
 
   if (categorySelect) {
-    if (!categories.length) {
-      categorySelect.innerHTML = '<option value="">No categories yet</option>';
-      categorySelect.disabled = true;
-    } else {
-      categorySelect.disabled = false;
-      categorySelect.innerHTML = '<option value="">Select category</option>';
-      categoryRowsByName.clear();
-      categories.forEach(c => {
-        const normalizedName = String(c.name || "").trim().toLowerCase();
-        if (normalizedName) categoryRowsByName.set(normalizedName, c);
-        const opt = document.createElement('option');
-        opt.value = c.name;
-        opt.textContent = c.name;
-        categorySelect.appendChild(opt);
-      });
-    }
+    categorySelect.disabled = false;
+    categorySelect.innerHTML = '<option value="">Select category</option>';
+    categoryRowsByName.clear();
+    categories.forEach(c => {
+      const normalizedName = String(c.name || "").trim().toLowerCase();
+      if (normalizedName) categoryRowsByName.set(normalizedName, c);
+    });
+    getTeacherPointCategories().forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.value;
+      opt.textContent = c.label;
+      categorySelect.appendChild(opt);
+    });
     categorySelect.addEventListener('change', () => {
+      selectedPromptCategory = "";
+      setStaffPromptActive("");
       syncPracticePoints();
       void refreshPracticeDateCache();
     });
     syncPracticePoints();
   }
+
+  pointsInput?.addEventListener("input", () => {
+    staffPointsManuallyEdited = true;
+  });
+
+  renderStaffPromptGrid();
 
   const { data: students, error: studentErr } = await loadStudentsForStudio(studioId);
   if (studentErr?.message) {
@@ -3326,7 +3318,7 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
     }
   }
 
-  const canSubmit = !catErr && !studentErr && categories.length > 0 && students.length > 0;
+  const canSubmit = !catErr && !studentErr && getTeacherPointCategories().length > 0 && students.length > 0;
   if (submitBtn) submitBtn.disabled = !canSubmit;
 
   renderStaffCalendar();
@@ -3336,7 +3328,7 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
     e.preventDefault();
     if (!categorySelect || !studentSelect || !pointsInput) return;
 
-    const category = categorySelect.value;
+    const category = String(selectedPromptCategory || categorySelect.value || "").trim();
     const points = Number(pointsInput.value);
     const notes = notesInput?.value?.trim() || '';
     const dates = Array.from(selectedDates);

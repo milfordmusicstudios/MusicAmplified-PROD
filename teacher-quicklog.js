@@ -9,6 +9,12 @@
   const statusEl = document.getElementById("qlStatus");
   const submitBtn = document.getElementById("qlSubmit");
   let practiceNoteEl = null;
+  let promptGrid = null;
+  let teacherLogPrompts = [];
+  let teacherPointCategories = [];
+  let pointsManuallyEdited = false;
+  let selectedPromptKey = "";
+  let selectedPromptCategory = "";
 
   let studioId = null;
   let currentUserId = null;
@@ -53,16 +59,57 @@
   }
 
   function syncPracticePoints() {
-    if (!categorySelect || !pointsInput) return;
-    const isPractice = String(categorySelect.value || "").trim().toLowerCase() === "practice";
+    if (!pointsInput) return;
+    const isPractice = String(selectedPromptCategory || categorySelect?.value || "").trim().toLowerCase() === "practice";
+    pointsInput.disabled = false;
     if (isPractice) {
-      pointsInput.value = "5";
-      pointsInput.disabled = true;
+      if (!pointsManuallyEdited) pointsInput.value = "5";
       if (practiceNoteEl) practiceNoteEl.style.display = "block";
       return;
     }
-    pointsInput.disabled = false;
     if (practiceNoteEl) practiceNoteEl.style.display = "none";
+  }
+
+  function setPromptActive(key) {
+    selectedPromptKey = String(key || "");
+    promptGrid?.querySelectorAll("[data-ql-prompt]").forEach(button => {
+      const active = String(button.getAttribute("data-ql-prompt") || "") === selectedPromptKey;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function applyPrompt(prompt) {
+    if (!prompt || !categorySelect || !pointsInput) return;
+    const category = String(prompt.category || "").trim().toLowerCase();
+    selectedPromptCategory = category;
+    categorySelect.value = "";
+    pointsInput.disabled = false;
+    if (Number.isFinite(Number(prompt.points))) pointsInput.value = String(prompt.points);
+    if (notesInput && !String(notesInput.value || "").trim() && prompt.notesPrompt) notesInput.placeholder = prompt.notesPrompt;
+    pointsManuallyEdited = false;
+    setPromptActive(prompt.key);
+    if (practiceNoteEl) practiceNoteEl.style.display = category === "practice" ? "block" : "none";
+  }
+
+  function ensurePromptGrid() {
+    if (!card || promptGrid || !categorySelect) return;
+    promptGrid = document.createElement("div");
+    promptGrid.id = "qlPromptGrid";
+    promptGrid.className = "staff-prompt-grid";
+    promptGrid.innerHTML = teacherLogPrompts.map(prompt => `
+      <button type="button" class="staff-prompt-button" data-ql-prompt="${prompt.key}" aria-pressed="false">
+        <span class="staff-prompt-icon" aria-hidden="true">${prompt.icon || ""}</span>
+        <span class="staff-prompt-label">${prompt.label}</span>
+      </button>
+    `).join("");
+    categorySelect.closest(".ql-category-pop, label, div")?.insertAdjacentElement("beforebegin", promptGrid);
+    promptGrid.querySelectorAll("[data-ql-prompt]").forEach(button => {
+      button.addEventListener("click", () => {
+        const key = String(button.getAttribute("data-ql-prompt") || "");
+        applyPrompt(teacherLogPrompts.find(prompt => prompt.key === key));
+      });
+    });
   }
 
   async function loadCategories() {
@@ -84,14 +131,10 @@
       return;
     }
 
-    const blockedCategoryNames = new Set(["batch_practice", "practice_batch"]);
-    (data || [])
-      .filter(cat => !blockedCategoryNames.has(String(cat?.name || "").toLowerCase()))
-      .forEach(cat => {
+    teacherPointCategories.forEach(cat => {
       const opt = document.createElement("option");
-      opt.value = cat.name;
-      opt.dataset.id = cat.id;
-      opt.textContent = cat.name;
+      opt.value = cat.value;
+      opt.textContent = cat.label;
       categorySelect.appendChild(opt);
     });
   }
@@ -144,9 +187,13 @@
 
     if (studentEl) studentEl.value = "";
     if (categoryEl) categoryEl.value = "";
+    selectedPromptCategory = "";
     if (pointsEl) pointsEl.value = "";
     if (notesEl) notesEl.value = "";
+    if (notesEl) notesEl.placeholder = "";
     if (dateEl) dateEl.value = "";
+    pointsManuallyEdited = false;
+    setPromptActive("");
 
     document.querySelectorAll(".selected, .active").forEach(el =>
       el.classList.remove("selected", "active")
@@ -159,7 +206,7 @@
     setStatus("");
 
     const studentId = studentSelect?.value || "";
-    const category = categorySelect?.value || "";
+    const category = selectedPromptCategory || categorySelect?.value || "";
     const date = dateInput?.value || "";
     const points = Number(pointsInput?.value);
     const notes = (notesInput?.value || "").trim();
@@ -210,6 +257,14 @@
 
   async function init() {
     if (!card || !supabase?.auth) return;
+    try {
+      const promptsModule = await import("./log-prompts.js");
+      teacherLogPrompts = promptsModule.getTeacherLogPrompts();
+      teacherPointCategories = promptsModule.getTeacherPointCategories();
+    } catch (error) {
+      console.warn("Quick log prompts unavailable", error);
+      teacherLogPrompts = [];
+    }
 
     const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
     const session = sessionData?.session || null;
@@ -253,7 +308,15 @@
     defaultDate();
     await loadCategories();
     await loadStudents();
-    categorySelect?.addEventListener("change", syncPracticePoints);
+    ensurePromptGrid();
+    categorySelect?.addEventListener("change", () => {
+      selectedPromptCategory = "";
+      setPromptActive("");
+      syncPracticePoints();
+    });
+    pointsInput?.addEventListener("input", () => {
+      pointsManuallyEdited = true;
+    });
     syncPracticePoints();
 
     form?.addEventListener("submit", handleSubmit);

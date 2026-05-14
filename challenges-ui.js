@@ -728,7 +728,7 @@ export async function initStaffChallengesUI({ studioId, user, roles, showToast }
       .select("name")
       .order("id", { ascending: true });
 
-    const blockedCategoryNames = new Set(["practice_batch", "batch_practice"]);
+    const blockedCategoryNames = new Set(["batch_practice"]);
 
     if (error) {
       console.warn("[ChallengesUI] categories fetch failed; using fallback options", error);
