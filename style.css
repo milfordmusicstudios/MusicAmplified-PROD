@@ -2826,6 +2826,120 @@ body.is-admin #roleBadgeTeacher {
   color: #0b4f8a;
 }
 
+#weeklyChallengeMount {
+  margin: 12px 0;
+}
+
+.weekly-challenge-card {
+  width: 100%;
+  border: 1px solid rgba(11,79,138,0.18);
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 14px;
+  box-shadow: 0 4px 16px rgba(11,79,138,0.08);
+}
+
+.weekly-challenge-kicker {
+  color: #5f738d;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.weekly-challenge-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.weekly-challenge-header h2 {
+  margin: 0;
+  color: #0b4f8a;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.weekly-challenge-week {
+  flex: 0 0 auto;
+  border: 1px solid rgba(11,79,138,0.18);
+  border-radius: 999px;
+  color: #0b4f8a;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 3px 8px;
+  background: rgba(18,121,200,0.08);
+}
+
+.weekly-challenge-points {
+  margin-top: 6px;
+  color: #1f2d3d;
+  font-weight: 800;
+}
+
+.weekly-challenge-description {
+  margin: 8px 0;
+  color: #2f4158;
+}
+
+.weekly-challenge-task {
+  border-left: 3px solid #49aef0;
+  padding: 8px 10px;
+  background: rgba(18,121,200,0.08);
+  color: #2f4158;
+  font-weight: 700;
+}
+
+.weekly-challenge-levels {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.weekly-challenge-level {
+  border: 1px solid rgba(11,79,138,0.14);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: #f8fbff;
+  color: #2f4158;
+}
+
+.weekly-challenge-level-label,
+.weekly-challenge-instructions-label {
+  color: #0b4f8a;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.weekly-challenge-instructions {
+  margin: 10px 0;
+  color: #2f4158;
+}
+
+.weekly-challenge-complete-note {
+  margin: 8px 0 10px;
+  color: #1f5a24;
+  font-weight: 800;
+}
+
+.weekly-challenge-card .blue-button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.weekly-challenge-modal {
+  width: min(560px, calc(100vw - 24px));
+}
+
+.weekly-challenge-submit h3 {
+  margin: 0 0 6px;
+  color: #0b4f8a;
+}
+
 .admin-dashboard .admin-action-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
