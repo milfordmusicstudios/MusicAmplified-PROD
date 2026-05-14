@@ -83,7 +83,7 @@
     if (!prompt || !categorySelect || !pointsInput) return;
     const category = String(prompt.category || "").trim().toLowerCase();
     selectedPromptCategory = category;
-    categorySelect.value = "";
+    categorySelect.value = category;
     pointsInput.disabled = false;
     if (Number.isFinite(Number(prompt.points))) pointsInput.value = String(prompt.points);
     if (notesInput && !String(notesInput.value || "").trim() && prompt.notesPrompt) notesInput.placeholder = prompt.notesPrompt;

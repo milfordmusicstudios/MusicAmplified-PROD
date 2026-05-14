@@ -1386,6 +1386,15 @@ const getRecognitionExportRosterMatch = (studentName) => {
   return recognitionExportRoster.find((row) => normalizeRecognitionStudentName(getQuickAddStudentName(row)) === normalized) || null;
 };
 
+const getRecognitionExportRosterMatchFor = (studentName, userId = "") => {
+  const normalizedUserId = String(userId || "").trim();
+  if (normalizedUserId) {
+    const byId = recognitionExportRoster.find((row) => String(row?.id || "") === normalizedUserId);
+    if (byId) return byId;
+  }
+  return getRecognitionExportRosterMatch(studentName);
+};
+
 const isRecognitionRosterInactive = (studentName) => {
   const match = getRecognitionExportRosterMatch(studentName);
   if (!match) return false;
@@ -1406,8 +1415,13 @@ const getRecognitionInstrumentText = (studentName) => {
 
 const getRecognitionPointsText = (studentName) => {
   const match = getRecognitionExportRosterMatch(studentName);
-  const value = match?.points ?? match?.totalPoints ?? match?.total_points ?? "";
+  const value = match?.totalPoints ?? match?.points ?? match?.total_points ?? "";
   return value === null || value === undefined ? "" : String(value);
+};
+
+const getLevelMinPoints = (level) => {
+  const value = Number(level?.minPoints ?? level?.min_points ?? level?.minpoints ?? 0);
+  return Number.isFinite(value) ? value : 0;
 };
 
 async function loadRecognitionLevels() {
@@ -1416,10 +1430,11 @@ async function loadRecognitionLevels() {
   try {
     const { data, error } = await supabase
       .from("levels")
-      .select("id, minPoints, maxPoints")
+      .select("*")
       .order("minPoints", { ascending: true });
     if (error) throw error;
-    recognitionLevels = Array.isArray(data) ? data : [];
+    recognitionLevels = (Array.isArray(data) ? data : [])
+      .sort((a, b) => getLevelMinPoints(a) - getLevelMinPoints(b));
   } catch (error) {
     recognitionLevelsLoaded = false;
     recognitionLevels = [];
@@ -1428,16 +1443,18 @@ async function loadRecognitionLevels() {
   return recognitionLevels;
 }
 
-const getRecognitionPointsToNextLevelText = (studentName) => {
-  const match = getRecognitionExportRosterMatch(studentName);
-  const points = Number(match?.points ?? match?.totalPoints ?? match?.total_points);
-  if (!Number.isFinite(points)) return "";
-  const levels = Array.isArray(recognitionLevels) ? recognitionLevels : [];
-  if (!levels.length) return "";
-  const next = levels.find((level) => points < Number(level?.minPoints || 0));
-  if (!next) return "Max level";
-  const needed = Math.max(0, Math.ceil(Number(next.minPoints || 0) - points));
-  return `${needed} point${needed === 1 ? "" : "s"}`;
+const getRecognitionTotalPointsFor = (studentName, userId = "") => {
+  const match = getRecognitionExportRosterMatchFor(studentName, userId);
+  const value = Number(match?.totalPoints ?? match?.points ?? match?.total_points);
+  return Number.isFinite(value) ? value : "";
+};
+
+const getRecognitionPointsNeededForNextLevelFor = (studentName, userId = "") => {
+  const totalPoints = getRecognitionTotalPointsFor(studentName, userId);
+  if (!Number.isFinite(Number(totalPoints))) return "";
+  const next = recognitionLevels.find((level) => Number(totalPoints) < getLevelMinPoints(level));
+  if (!next) return "Max Level";
+  return Math.max(0, Math.ceil(getLevelMinPoints(next) - Number(totalPoints)));
 };
 
 const getValidRecognitionNotificationRows = (notifications = [], options = {}) =>
@@ -1460,11 +1477,16 @@ const getValidRecognitionNotificationRows = (notifications = [], options = {}) =
 
 const toRecognitionExportRow = (row) => {
   const student = getNotificationStudentName(row).trim();
+  const userId = getNotificationUserId(row);
   const createdAt = new Date(row?.created_at || "");
+  const totalPoints = getRecognitionTotalPointsFor(student, userId);
   return {
     source: row,
+    userId,
     student,
     level: getNotificationLevelNumber(row),
+    totalPoints,
+    pointsNeededForNextLevel: getRecognitionPointsNeededForNextLevelFor(student, userId),
     createdAt,
     recognitionGiven: isRecognitionGiven(row),
     recognitionDate: getRecognitionRecordedAtValue(row) ? new Date(getRecognitionRecordedAtValue(row)) : null
@@ -1548,7 +1570,7 @@ const getRecognitionExportColumns = (options, rows) => {
   const columns = [
     { key: "student", label: "Student", value: (row) => row.student },
     { key: "level", label: "Level Completed", value: (row) => row.level },
-    { key: "pointsToNextLevel", label: "Points Needed For Next Level", value: (row) => getRecognitionPointsToNextLevelText(row.student) },
+    { key: "pointsNeededForNextLevel", label: "Points Needed For Next Level", value: (row) => row.pointsNeededForNextLevel },
     ...(options.includeDates === false ? [] : [{ key: "completionDate", label: "Completion Date", value: (row) => formatRecognitionExportDate(row.createdAt) }]),
     { key: "recognitionGiven", label: "Recognition Given", value: (row) => row.recognitionGiven ? "Yes" : "No" },
     ...(rows.some((row) => row.recognitionGiven && row.recognitionDate instanceof Date && !Number.isNaN(row.recognitionDate.getTime()))
@@ -1557,7 +1579,7 @@ const getRecognitionExportColumns = (options, rows) => {
   ];
   if (options.includeTeacher) columns.push({ key: "teacher", label: "Teacher", value: (row) => getRecognitionTeacherText(row.student) });
   if (options.includeInstrument) columns.push({ key: "instrument", label: "Instrument", value: (row) => getRecognitionInstrumentText(row.student) });
-  if (options.includePoints) columns.push({ key: "points", label: "Total Points", value: (row) => getRecognitionPointsText(row.student) });
+  if (options.includePoints) columns.push({ key: "totalPoints", label: "Total Points", value: (row) => row.totalPoints });
   return columns;
 };
 
@@ -2197,6 +2219,7 @@ async function loadRecognitionExportRoster() {
       })
       .map((row) => ({
         ...row,
+        totalPoints: Number.isFinite(Number(row.points)) ? Number(row.points) : 0,
         teacherNames: Array.isArray(row.teacherIds)
           ? row.teacherIds.map((id) => staffNameById.get(String(id))).filter(Boolean)
           : []
@@ -2653,7 +2676,12 @@ async function loadNotifications(statusText = "", options = {}) {
     const recognitionTime = formatRecognitionRecordedAt(getRecognitionRecordedAtValue(n));
     const recognitionBy = getRecognitionGivenByValue(n);
     const existingNote = getRecognitionNoteValue(n);
-    const pointsToNext = isLevelUp ? getRecognitionPointsToNextLevelText(getNotificationStudentName(n)) : "";
+    const pointsToNextValue = isLevelUp
+      ? getRecognitionPointsNeededForNextLevelFor(getNotificationStudentName(n), getNotificationUserId(n))
+      : "";
+    const pointsToNext = Number.isFinite(Number(pointsToNextValue))
+      ? `${pointsToNextValue} point${Number(pointsToNextValue) === 1 ? "" : "s"}`
+      : String(pointsToNextValue || "");
     li.className = `review-notification-item${recognized ? " is-recognized" : ""}`;
     li.innerHTML = `
       <div class="review-notification-main">
@@ -2921,7 +2949,7 @@ function applyQuickAddPrompt(prompt) {
   if (!prompt || !quickAddPoints) return;
   const category = String(prompt.category || "").trim().toLowerCase();
   quickAddSelectedPromptCategory = category;
-  if (quickAddCategory) quickAddCategory.value = "";
+  if (quickAddCategory) quickAddCategory.value = category;
   quickAddPoints.disabled = false;
   if (Number.isFinite(Number(prompt.points))) quickAddPoints.value = String(prompt.points);
   if (quickAddNotes && !String(quickAddNotes.value || "").trim() && prompt.notesPrompt) {

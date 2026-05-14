@@ -51,7 +51,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!prompt || !categorySelect || !pointsInput) return;
     const category = String(prompt.category || "").trim().toLowerCase();
     selectedPromptCategory = category;
-    categorySelect.value = "";
+    categorySelect.value = category;
     if (Number.isFinite(Number(prompt.points))) pointsInput.value = String(prompt.points);
     pointsInput.disabled = false;
     pointsManuallyEdited = false;
