@@ -1258,6 +1258,7 @@ const recognitionExportElements = {
   sort: document.getElementById("recognitionExportSort"),
   includeDates: document.getElementById("recognitionExportIncludeDates"),
   includePoints: document.getElementById("recognitionExportIncludePoints"),
+  includeNoNotifications: document.getElementById("recognitionExportIncludeNoNotifications"),
   onlyUnrecognized: document.getElementById("recognitionExportOnlyUnrecognized"),
   includeInactive: document.getElementById("recognitionExportIncludeInactive")
 };
@@ -1474,6 +1475,24 @@ const getRecognitionPointsNeededForNextLevelFor = (studentName, userId = "") => 
   return Math.max(0, Math.ceil(getLevelMinPoints(next) - Number(totalPoints)));
 };
 
+const toRecognitionRosterExportRow = (student) => {
+  const studentName = getQuickAddStudentName(student);
+  const userId = String(student?.id || "").trim();
+  return {
+    source: null,
+    userId,
+    studentUserId: userId,
+    student: studentName,
+    level: Number.isFinite(Number(student?.level)) ? Number(student.level) : "",
+    totalPoints: getRecognitionTotalPointsFor(studentName, userId),
+    pointsNeededForNextLevel: getRecognitionPointsNeededForNextLevelFor(studentName, userId),
+    createdAt: null,
+    recognitionGiven: false,
+    recognitionDate: null,
+    hasNotification: false
+  };
+};
+
 const getValidRecognitionNotificationRows = (notifications = [], options = {}) =>
   (Array.isArray(notifications) ? notifications : [])
     .filter((row) => {
@@ -1508,15 +1527,20 @@ const toRecognitionExportRow = (row) => {
     pointsNeededForNextLevel: getRecognitionPointsNeededForNextLevelFor(student, userId),
     createdAt,
     recognitionGiven: isRecognitionGiven(row),
-    recognitionDate: getRecognitionRecordedAtValue(row) ? new Date(getRecognitionRecordedAtValue(row)) : null
+    recognitionDate: getRecognitionRecordedAtValue(row) ? new Date(getRecognitionRecordedAtValue(row)) : null,
+    hasNotification: true
   };
 };
 
 const sortRecognitionRows = (rows, sort) => [...rows].sort((a, b) => {
   if (sort === "student_az") return a.student.localeCompare(b.student, undefined, { sensitivity: "base" });
-  if (sort === "date_desc") return b.createdAt.getTime() - a.createdAt.getTime();
-  if (sort === "date_asc") return a.createdAt.getTime() - b.createdAt.getTime();
-  return (b.level - a.level) ||
+  const aTime = a.createdAt instanceof Date && !Number.isNaN(a.createdAt.getTime()) ? a.createdAt.getTime() : 0;
+  const bTime = b.createdAt instanceof Date && !Number.isNaN(b.createdAt.getTime()) ? b.createdAt.getTime() : 0;
+  if (sort === "date_desc") return bTime - aTime;
+  if (sort === "date_asc") return aTime - bTime;
+  const aLevel = Number.isFinite(Number(a.level)) ? Number(a.level) : -1;
+  const bLevel = Number.isFinite(Number(b.level)) ? Number(b.level) : -1;
+  return (bLevel - aLevel) ||
     a.student.localeCompare(b.student, undefined, { sensitivity: "base" });
 });
 
@@ -1579,10 +1603,32 @@ const getRecognitionExportRows = async (options = {}) => {
     sort: options.sort || "level_desc"
   };
   if (options.scope === "highest") {
-    return getHighestCompletedLevelsForRecognition(notifications, scopedOptions);
+    const rows = getHighestCompletedLevelsForRecognition(notifications, scopedOptions);
+    return options.includeNoNotifications
+      ? getRecognitionRowsWithRosterStudents(rows, options)
+      : rows;
   }
   const rows = getValidRecognitionNotificationRows(notifications, scopedOptions).map(toRecognitionExportRow);
-  return sortRecognitionRows(rows, options.sort || (options.scope === "recent" ? "date_desc" : "level_desc"));
+  const mergedRows = options.includeNoNotifications
+    ? getRecognitionRowsWithRosterStudents(rows, options)
+    : rows;
+  return sortRecognitionRows(mergedRows, options.sort || (options.scope === "recent" ? "date_desc" : "level_desc"));
+};
+
+const getRecognitionRowsWithRosterStudents = (rows, options = {}) => {
+  const existingKeys = new Set((Array.isArray(rows) ? rows : []).map((row) =>
+    String(row.studentUserId || normalizeRecognitionStudentName(row.student || "")).trim()
+  ).filter(Boolean));
+  const rosterRows = recognitionExportRoster
+    .filter((student) => {
+      const name = getQuickAddStudentName(student);
+      if (!name || name === "Student" || name.toLowerCase() === "milford music") return false;
+      if (!options.includeInactive && (student.active === false || Boolean(student.deactivated_at))) return false;
+      const key = String(student.id || normalizeRecognitionStudentName(name)).trim();
+      return key && !existingKeys.has(key);
+    })
+    .map(toRecognitionRosterExportRow);
+  return sortRecognitionRows([...(Array.isArray(rows) ? rows : []), ...rosterRows], options.sort || "level_desc");
 };
 
 const getRecognitionExportColumns = (options, rows) => {
@@ -2357,6 +2403,7 @@ function resetRecognitionExportOptions() {
   if (recognitionExportElements.dateTo) recognitionExportElements.dateTo.value = "";
   if (recognitionExportElements.includeDates) recognitionExportElements.includeDates.checked = true;
   if (recognitionExportElements.includePoints) recognitionExportElements.includePoints.checked = false;
+  if (recognitionExportElements.includeNoNotifications) recognitionExportElements.includeNoNotifications.checked = false;
   if (recognitionExportElements.onlyUnrecognized) recognitionExportElements.onlyUnrecognized.checked = false;
   if (recognitionExportElements.includeInactive) recognitionExportElements.includeInactive.checked = false;
   syncRecognitionExportDateRange();
@@ -2379,7 +2426,8 @@ function collectRecognitionExportOptions() {
     dateFrom: recognitionExportElements.dateFrom?.value || "",
     dateTo: recognitionExportElements.dateTo?.value || "",
     includeDates: recognitionExportElements.includeDates?.checked !== false,
-    includePoints: Boolean(recognitionExportElements.includePoints?.checked),
+    includeNoNotifications: Boolean(recognitionExportElements.includeNoNotifications?.checked),
+    includePoints: Boolean(recognitionExportElements.includePoints?.checked || recognitionExportElements.includeNoNotifications?.checked),
     onlyUnrecognized: Boolean(recognitionExportElements.onlyUnrecognized?.checked),
     includeInactive: Boolean(recognitionExportElements.includeInactive?.checked)
   };
