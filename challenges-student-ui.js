@@ -267,13 +267,17 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
       const start = String(challenge.start_date || "");
       const end = String(challenge.end_date || "");
       const status = String(row.status || "");
-      const inWindow = !!start && !!end && today >= start && today <= end;
+      const startsOnTime = !start || today >= start;
+      const endsOnTime = !end || today <= end;
+      const inWindow = startsOnTime && endsOnTime;
       const endedByDate = !!end && today > end;
-      const endedByTeacher = challenge?.is_active === false;
+      const activeValue = challenge?.is_active;
+      const endedByTeacher = activeValue === false || String(activeValue).toLowerCase() === "false";
       const challengeEnded = endedByDate || endedByTeacher;
       const completedStatus = status === "completed" || status === "completed_pending" || status === "pending_review" || status === "pending";
-      const current = status === "active" && inWindow && !challengeEnded;
-      const expired = !completedStatus && !current;
+      const availableStatus = status === "active" || status === "new";
+      const current = availableStatus && inWindow && !challengeEnded;
+      const expired = !completedStatus && !current && (challengeEnded || status === "dismissed");
       return { ...row, challenge, start, end, status, inWindow, challengeEnded, current, expired, today };
     });
 

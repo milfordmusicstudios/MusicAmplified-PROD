@@ -1,5 +1,6 @@
 import { supabase } from "./supabaseClient.js";
 import { createChallenge, deleteChallenge, updateChallenge } from "./challenges-api.js";
+import { getCurrentChallenge } from "./weekly-challenges-api.js";
 
 let staffChallengesEscBound = false;
 const dispatchTutorialAction = (action) => {
@@ -40,6 +41,35 @@ function splitCategoryFromDescription(value) {
   return {
     category: String(match[1] || "").trim(),
     description: String(match[2] || "").trim()
+  };
+}
+
+function weeklyPointText(challenge) {
+  const type = String(challenge?.point_type || "").trim().toLowerCase();
+  if (type && type !== "fixed") return "Points based on activity completed";
+  const points = Number(challenge?.points || 0);
+  return `${points} point${points === 1 ? "" : "s"}`;
+}
+
+function normalizeWeeklyChallengeForStaff(challenge) {
+  if (!challenge?.id) return null;
+  return {
+    ...challenge,
+    id: `weekly-${challenge.id}`,
+    weekly_challenge_id: challenge.id,
+    source: "weekly",
+    title: challenge.title || "Studio Wide Challenge",
+    description: challenge.description || "",
+    points: challenge.points,
+    point_type: challenge.point_type,
+    is_active: challenge.active !== false,
+    start_date: "",
+    end_date: "",
+    total_assigned: 0,
+    new_count: 0,
+    active_count: 0,
+    completed_pending_count: 0,
+    completed_count: 0
   };
 }
 
@@ -946,6 +976,54 @@ export async function initStaffChallengesUI({ studioId, user, roles, showToast }
   };
 
   const renderChallengeDetail = async (row, mode) => {
+    if (row?.source === "weekly") {
+      const isActiveMode = mode === "active";
+      const challengeText = String(row?.challenge || "").trim();
+      const descriptionText = String(row?.description || "").trim();
+      const levels = row?.has_levels
+        ? [
+            row?.beginner ? `<div class="challenge-detail-meta-cell"><span class="challenge-detail-meta-label">Beginner</span><span class="challenge-detail-meta-value">${escapeHtml(row.beginner)}</span></div>` : "",
+            row?.intermediate ? `<div class="challenge-detail-meta-cell"><span class="challenge-detail-meta-label">Intermediate</span><span class="challenge-detail-meta-value">${escapeHtml(row.intermediate)}</span></div>` : "",
+            row?.advanced ? `<div class="challenge-detail-meta-cell"><span class="challenge-detail-meta-label">Advanced</span><span class="challenge-detail-meta-value">${escapeHtml(row.advanced)}</span></div>` : ""
+          ].filter(Boolean).join("")
+        : "";
+      if (!detailBody) return;
+      detailBody.innerHTML = `
+        <div class="challenge-detail-block">
+          <div class="challenge-detail-title">${escapeHtml(String(row?.title || "Studio Wide Challenge"))}</div>
+          <div class="challenge-detail-meta challenge-detail-meta-stack">
+            <span>&#9733; Studio Wide Challenge</span>
+            <span>Week ${escapeHtml(String(row?.week_number || ""))}</span>
+          </div>
+          <div class="challenge-meta-card">
+            <div class="challenge-meta-grid">
+              <div class="challenge-detail-meta-cell"><span class="challenge-detail-meta-label">Points</span><span class="challenge-detail-meta-value">${escapeHtml(weeklyPointText(row))}</span></div>
+              <div class="challenge-detail-meta-cell"><span class="challenge-detail-meta-label">Type</span><span class="challenge-detail-meta-value">${escapeHtml(String(row?.challenge_type || "weekly"))}</span></div>
+              ${levels}
+            </div>
+          </div>
+          ${descriptionText ? `<div class="challenge-detail-desc">${escapeHtml(descriptionText)}</div>` : ""}
+          ${challengeText ? `<div class="challenge-detail-desc">${escapeHtml(challengeText)}</div>` : ""}
+          ${row?.notes_instruction ? `<div class="challenge-detail-meta">Submission instructions: ${escapeHtml(row.notes_instruction)}</div>` : ""}
+        </div>
+        <div class="challenge-detail-actions ${isActiveMode ? "is-active" : "is-ended"}"></div>
+      `;
+      if (detailHeaderBackBtn) {
+        detailHeaderBackBtn.textContent = `\u2190 Back to ${mode === "ended" ? "ended" : "active"}`;
+        detailHeaderBackBtn.onclick = () => {
+          hideDetailModal();
+          currentChallengesTab = mode === "ended" ? "ended" : "active";
+          renderChallengesTabButtons();
+          openChallengesModalForTab(currentChallengesTab);
+        };
+      }
+      if (detailMoreBtn) detailMoreBtn.hidden = true;
+      toggleDetailMoreMenu(false);
+      hideChallengesModal();
+      if (detailOverlay) detailOverlay.style.display = "flex";
+      return;
+    }
+
     const parsed = splitCategoryFromDescription(row?.description);
     const isActiveMode = mode === "active";
     const descriptionText = String(parsed.description || "").trim();
@@ -1223,17 +1301,24 @@ export async function initStaffChallengesUI({ studioId, user, roles, showToast }
     if (!ensureValidStudioId()) return 0;
     const previousHtml = render && listEl ? listEl.innerHTML : "";
     if (render && listEl) listEl.innerHTML = "Loading...";
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const todayKey = toDateInputValue(new Date());
     const isEndedTab = mode === "ended";
 
     let rpcRows = [];
+    let weeklyRow = null;
     try {
       const { data, error } = await supabase.rpc("list_teacher_challenges_with_counts_for_staff", {
         p_studio_id: resolvedStudioId
       });
       if (error) throw error;
       rpcRows = Array.isArray(data) ? data : [];
+      if (!isEndedTab) {
+        try {
+          weeklyRow = normalizeWeeklyChallengeForStaff(await getCurrentChallenge());
+        } catch (weeklyError) {
+          console.error("[ChallengesUI] failed to load weekly challenge for staff", weeklyError);
+        }
+      }
     } catch (error) {
       console.error(`[ChallengesUI] failed to load ${mode} challenges`, error);
       if (typeof showToast === "function") showToast("Couldn't load challenges.");
@@ -1243,11 +1328,17 @@ export async function initStaffChallengesUI({ studioId, user, roles, showToast }
       return 0;
     }
 
-    const rows = rpcRows.filter(row => {
-      const end = row?.end_date ? new Date(`${row.end_date}T00:00:00`) : null;
-      const ended = (row?.is_active === false) || (!!end && end < today);
-      return isEndedTab ? ended : !ended;
+    const teacherRows = rpcRows.filter(row => {
+      const activeValue = row?.is_active;
+      const isActive = activeValue !== false && String(activeValue).toLowerCase() !== "false";
+      const endKey = String(row?.end_date || "").slice(0, 10);
+      const isExpired = !!endKey && endKey < todayKey;
+      const ended = !isActive || isExpired;
+      return isEndedTab ? ended : isActive && !isExpired;
     });
+    const rows = !isEndedTab && weeklyRow?.is_active
+      ? [weeklyRow, ...teacherRows]
+      : teacherRows;
 
     if (mode === "active") activeChallengesRows = rows;
     if (mode === "ended") endedChallengesRows = rows;
@@ -1268,12 +1359,13 @@ export async function initStaffChallengesUI({ studioId, user, roles, showToast }
         <div class="challenge-active-row-top">
           <div class="challenge-active-title-wrap">
             <div class="challenge-active-title">${escapeHtml(String(row.title || "Untitled challenge"))}</div>
+            ${row?.source === "weekly" ? '<span class="challenge-inactive-pill">&#9733; Studio Wide</span>' : ""}
             ${!isEndedTab && row?.is_active === false ? '<span class="challenge-inactive-pill">Inactive</span>' : ""}
           </div>
-          <div class="challenge-active-date">${isEndedTab ? "Ended" : "Ends"} ${escapeHtml(String(row.end_date || ""))}</div>
+          <div class="challenge-active-date">${row?.source === "weekly" ? `Week ${escapeHtml(String(row.week_number || ""))}` : `${isEndedTab ? "Ended" : "Ends"} ${escapeHtml(String(row.end_date || ""))}`}</div>
         </div>
-        <div class="challenge-active-meta is-subtle">Assigned to ${Number(row.total_assigned || 0)} students</div>
-        <div class="challenge-status-chips">${renderStatusChips(statusCounts)}</div>
+        <div class="challenge-active-meta is-subtle">${row?.source === "weekly" ? `Studio-wide weekly challenge - ${escapeHtml(weeklyPointText(row))}` : `Assigned to ${Number(row.total_assigned || 0)} students`}</div>
+        ${row?.source === "weekly" ? "" : `<div class="challenge-status-chips">${renderStatusChips(statusCounts)}</div>`}
       </div>
     `;
     }).join("");

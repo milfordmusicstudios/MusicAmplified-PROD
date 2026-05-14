@@ -6089,6 +6089,7 @@ body.leaderboard-page .level-badge {
   width: 56px;
   height: 56px;
   object-fit: contain;
+  cursor: pointer;
 }
 
 body.leaderboard-page .level-bar {

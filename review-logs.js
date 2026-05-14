@@ -1277,6 +1277,8 @@ const notificationSelectedStudentIds = new Set();
 let latestRecognitionNotificationRows = [];
 let recognitionExportRoster = [];
 let recognitionExportRosterLoaded = false;
+let recognitionLevels = [];
+let recognitionLevelsLoaded = false;
 
 const isLevelUpNotification = (row) => {
   const type = String(row?.type || "").toLowerCase();
@@ -1359,7 +1361,9 @@ const getNotificationStudentName = (row) => {
   if (match?.[1]) return match[1].trim();
   const userId = getNotificationUserId(row);
   const rosterMatch = notificationFilterRoster.find((student) => String(student.id) === userId);
-  return rosterMatch ? getQuickAddStudentName(rosterMatch) : "";
+  if (rosterMatch) return getQuickAddStudentName(rosterMatch);
+  const exportRosterMatch = recognitionExportRoster.find((student) => String(student.id) === userId);
+  return exportRosterMatch ? getQuickAddStudentName(exportRosterMatch) : "";
 };
 const isRecognitionTestAccountNotification = (row) =>
   isLevelUpNotification(row) && getNotificationStudentName(row).toLowerCase() === "milford music";
@@ -1404,6 +1408,36 @@ const getRecognitionPointsText = (studentName) => {
   const match = getRecognitionExportRosterMatch(studentName);
   const value = match?.points ?? match?.totalPoints ?? match?.total_points ?? "";
   return value === null || value === undefined ? "" : String(value);
+};
+
+async function loadRecognitionLevels() {
+  if (recognitionLevelsLoaded) return recognitionLevels;
+  recognitionLevelsLoaded = true;
+  try {
+    const { data, error } = await supabase
+      .from("levels")
+      .select("id, minPoints, maxPoints")
+      .order("minPoints", { ascending: true });
+    if (error) throw error;
+    recognitionLevels = Array.isArray(data) ? data : [];
+  } catch (error) {
+    recognitionLevelsLoaded = false;
+    recognitionLevels = [];
+    console.warn("[ReviewLogs] recognition levels failed", error);
+  }
+  return recognitionLevels;
+}
+
+const getRecognitionPointsToNextLevelText = (studentName) => {
+  const match = getRecognitionExportRosterMatch(studentName);
+  const points = Number(match?.points ?? match?.totalPoints ?? match?.total_points);
+  if (!Number.isFinite(points)) return "";
+  const levels = Array.isArray(recognitionLevels) ? recognitionLevels : [];
+  if (!levels.length) return "";
+  const next = levels.find((level) => points < Number(level?.minPoints || 0));
+  if (!next) return "Max level";
+  const needed = Math.max(0, Math.ceil(Number(next.minPoints || 0) - points));
+  return `${needed} point${needed === 1 ? "" : "s"}`;
 };
 
 const getValidRecognitionNotificationRows = (notifications = [], options = {}) =>
@@ -1494,6 +1528,7 @@ const getCurrentRecognitionNotificationRows = async () => {
 
 const getRecognitionExportRows = async (options = {}) => {
   await loadRecognitionExportRoster();
+  await loadRecognitionLevels();
   const notifications = await getCurrentRecognitionNotificationRows();
   const scopedOptions = {
     includeInactive: Boolean(options.includeInactive),
@@ -1513,6 +1548,7 @@ const getRecognitionExportColumns = (options, rows) => {
   const columns = [
     { key: "student", label: "Student", value: (row) => row.student },
     { key: "level", label: "Level Completed", value: (row) => row.level },
+    { key: "pointsToNextLevel", label: "Points Needed For Next Level", value: (row) => getRecognitionPointsToNextLevelText(row.student) },
     ...(options.includeDates === false ? [] : [{ key: "completionDate", label: "Completion Date", value: (row) => formatRecognitionExportDate(row.createdAt) }]),
     { key: "recognitionGiven", label: "Recognition Given", value: (row) => row.recognitionGiven ? "Yes" : "No" },
     ...(rows.some((row) => row.recognitionGiven && row.recognitionDate instanceof Date && !Number.isNaN(row.recognitionDate.getTime()))
@@ -2144,7 +2180,7 @@ async function loadRecognitionExportRoster() {
   try {
     const { data: students, error: studentsError } = await supabase
       .from("users")
-      .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at, points")
+      .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at, points, instrument, instrumentName, primaryInstrument, primary_instrument")
       .eq("studio_id", viewerContext.studioId);
     if (studentsError) throw studentsError;
 
@@ -2464,6 +2500,8 @@ function createNotificationAdminControls(statusText = "") {
 
 async function loadNotifications(statusText = "", options = {}) {
   notificationsSection.innerHTML = "<p>Loading notifications...</p>";
+  await loadRecognitionExportRoster();
+  await loadRecognitionLevels();
   let notificationCurrentPage = options?.resetPage ? 1 : 1;
   let notificationPageSize = Number(document.getElementById("logsPerPage")?.value || DEFAULT_NOTIFICATION_PAGE_SIZE);
   if (!Number.isFinite(notificationPageSize) || notificationPageSize <= 0) notificationPageSize = DEFAULT_NOTIFICATION_PAGE_SIZE;
@@ -2615,11 +2653,13 @@ async function loadNotifications(statusText = "", options = {}) {
     const recognitionTime = formatRecognitionRecordedAt(getRecognitionRecordedAtValue(n));
     const recognitionBy = getRecognitionGivenByValue(n);
     const existingNote = getRecognitionNoteValue(n);
+    const pointsToNext = isLevelUp ? getRecognitionPointsToNextLevelText(getNotificationStudentName(n)) : "";
     li.className = `review-notification-item${recognized ? " is-recognized" : ""}`;
     li.innerHTML = `
       <div class="review-notification-main">
         <b>${new Date(n.created_at).toLocaleString()}</b><br>
         ${getNotificationDisplayMessage(n) || ""}
+        ${isLevelUp && pointsToNext ? `<div class="review-notification-recorded">Points needed for next level: ${pointsToNext}</div>` : ""}
         ${isLevelUp && recognized && recognitionTime ? `<div class="review-notification-recorded">Recognition recorded on ${recognitionTime}${recognitionBy ? ` by ${recognitionBy}` : ""}</div>` : ""}
       </div>
       ${isLevelUp ? `
@@ -3126,7 +3166,7 @@ async function loadQuickAddStudents() {
 
   const { data: students, error } = await supabase
     .from("users")
-    .select("id, firstName, lastName, email, roles, teacherIds")
+    .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at, points, instrument, instrumentName, primaryInstrument, primary_instrument")
     .eq("studio_id", viewerContext.studioId)
     .eq("active", true)
     .is("deactivated_at", null);

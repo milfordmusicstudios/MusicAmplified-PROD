@@ -87,16 +87,48 @@ document.addEventListener("DOMContentLoaded", async () => {
 function renderLevelBars(container, levelsDesc) {
   if (!container) return;
   container.innerHTML = "";
+  const levelsAsc = Array.isArray(window.__LEVELS_ASC__) ? window.__LEVELS_ASC__ : [];
 
   levelsDesc.forEach(level => {
     const row = document.createElement("div");
     row.className = "level-row";
     row.dataset.level = String(level.id);
+    const rangeLabel = formatLevelRange(level, levelsAsc);
 
     const badge = document.createElement("img");
     badge.className = "level-badge";
     badge.src = level.badge || `images/levelBadges/level${level.id}.png`;
     badge.alt = `Level ${level.id}`;
+    badge.title = `Level ${level.id}: ${rangeLabel}`;
+    badge.tabIndex = 0;
+    badge.setAttribute("role", "button");
+    badge.setAttribute("aria-label", `Level ${level.id}: ${rangeLabel}`);
+    badge.dataset.levelId = String(level.id);
+    badge.dataset.levelRange = rangeLabel;
+    badge.addEventListener("mouseenter", () => {
+      const rect = badge.getBoundingClientRect();
+      showOverlay({
+        x: rect.right,
+        y: rect.top,
+        levelNumber: badge.dataset.levelId || "",
+        levelRange: badge.dataset.levelRange || ""
+      });
+    });
+    badge.addEventListener("mouseleave", () => {
+      document.getElementById("lb-overlay-card")?.remove();
+    });
+    badge.addEventListener("focus", () => {
+      const rect = badge.getBoundingClientRect();
+      showOverlay({
+        x: rect.right,
+        y: rect.top,
+        levelNumber: badge.dataset.levelId || "",
+        levelRange: badge.dataset.levelRange || ""
+      });
+    });
+    badge.addEventListener("blur", () => {
+      document.getElementById("lb-overlay-card")?.remove();
+    });
 
     const bar = document.createElement("div");
     bar.className = "level-bar";
@@ -367,6 +399,18 @@ function getLevelRange(level, levels) {
   return { minPoints, maxPoints, span };
 }
 
+function formatLevelRange(level, levels) {
+  const range = getLevelRange(level, levels);
+  const min = Number(range.minPoints || 0);
+  const explicitMax = Number(level?.maxPoints);
+  const hasExplicitMax = Number.isFinite(explicitMax) && explicitMax >= min;
+  const idx = Array.isArray(levels) ? levels.findIndex(l => l.id === level.id) : -1;
+  const next = idx >= 0 ? levels[idx + 1] : null;
+  if (!next && !hasExplicitMax) return `${min}+ points`;
+  const max = hasExplicitMax ? explicitMax : Math.max(min, Number(next?.minPoints || min + 1) - 1);
+  return `${min}-${max} points`;
+}
+
 function darkenColor(hex, amt = -30) {
   try {
     let col = hex.replace("#", "");
@@ -447,7 +491,7 @@ function ensureOverlay() {
   }
   return card;
 }
-function showOverlay({ x, y, name, points, levelNumber, square }) {
+function showOverlay({ x, y, name, points, levelNumber, square, levelRange }) {
   const card = ensureOverlay();
   const nameRow = (name && viewerCanSeeNames())
     ? `<div style="font-weight:700; color:#00477d; margin-bottom:4px;">${name}</div>`
@@ -457,8 +501,9 @@ function showOverlay({ x, y, name, points, levelNumber, square }) {
 
   card.innerHTML = `
     ${nameRow}
-    <div style="margin-bottom:2px;">Points: <b>${Number(points) || 0}</b></div>
+    ${points === undefined ? "" : `<div style="margin-bottom:2px;">Points: <b>${Number(points) || 0}</b></div>`}
     <div>Level <b>${levelNumber}</b>${squarePart}</div>
+    ${levelRange ? `<div>Range: <b>${levelRange}</b></div>` : ""}
   `;
 
   const pad = 8;
@@ -475,6 +520,17 @@ function showOverlay({ x, y, name, points, levelNumber, square }) {
 }
 
 document.addEventListener('click', (e) => {
+  const levelBadge = e.target.closest('.level-badge');
+  if (levelBadge) {
+    showOverlay({
+      x: e.clientX,
+      y: e.clientY,
+      levelNumber: levelBadge.dataset.levelId || "",
+      levelRange: levelBadge.dataset.levelRange || ""
+    });
+    return;
+  }
+
   const el = e.target.closest('.leaderboard-avatar');
   if (!el) {
     const card = document.getElementById('lb-overlay-card');
@@ -495,5 +551,18 @@ document.addEventListener('click', (e) => {
     points,
     levelNumber,
     square
+  });
+});
+
+document.addEventListener("keydown", (e) => {
+  const levelBadge = e.target?.closest?.(".level-badge");
+  if (!levelBadge || (e.key !== "Enter" && e.key !== " ")) return;
+  e.preventDefault();
+  const rect = levelBadge.getBoundingClientRect();
+  showOverlay({
+    x: rect.right,
+    y: rect.top,
+    levelNumber: levelBadge.dataset.levelId || "",
+    levelRange: levelBadge.dataset.levelRange || ""
   });
 });
