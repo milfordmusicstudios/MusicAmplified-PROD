@@ -1,5 +1,6 @@
 import { supabase } from "./supabaseClient.js";
 import { completeChallengeAndCreateLog, ensureFirstPracticeChallengeAssignment, fetchMyChallengeAssignments, updateAssignmentStatus } from "./challenges-api.js";
+import { completeWeeklyChallenge, fetchWeeklyChallengeCompletion, fetchWeeklyChallengeCompletions, getCurrentChallenge } from "./weekly-challenges-api.js";
 
 const NEW_BANNER_SEEN_KEY = "studentChallengesNewBannerSeen";
 const NEW_BANNER_OPENED_KEY = "studentChallengesNewBannerOpened";
@@ -34,6 +35,44 @@ function badgeClass(row) {
   if (row?.status === "completed_pending" || row?.status === "pending_review" || row?.status === "pending") return "is-pending";
   if (row?.status === "completed") return "is-completed";
   return "";
+}
+
+function weeklyPointText(challenge) {
+  const type = String(challenge?.point_type || "").toLowerCase();
+  if (type === "memorization" || type === "precision" || type === "performance" || type === "practice") {
+    return "Points based on activity completed";
+  }
+  const points = Number(challenge?.points);
+  return Number.isFinite(points) ? `${points} points` : "Points based on activity completed";
+}
+
+function weeklyRequiresQuantity(challenge) {
+  const type = String(challenge?.point_type || "").toLowerCase();
+  return type === "memorization" || type === "precision";
+}
+
+function weeklyQuantityLabel(challenge) {
+  return String(challenge?.point_type || "").toLowerCase() === "precision" ? "Bars polished" : "Bars memorized";
+}
+
+function renderWeeklyLevels(challenge) {
+  if (!challenge?.has_levels) return "";
+  const rows = [
+    ["Beginner", challenge.beginner],
+    ["Intermediate", challenge.intermediate],
+    ["Advanced", challenge.advanced]
+  ].filter(([, text]) => String(text || "").trim());
+
+  return `
+    <div class="student-challenge-levels">
+      ${rows.map(([label, text]) => `
+        <div class="student-challenge-level">
+          <div class="student-challenge-level-label">${String(label)}</div>
+          <div>${String(text || "")}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
 }
 
 function setStudentChallengeToggleVisual(button, isActive) {
@@ -102,8 +141,8 @@ function ensureStudentChallengeModals() {
             <label>Challenge</label>
             <input id="studentChallengeCompleteTitle" type="text" readonly />
           </div>
-          <div class="challenge-date-row">
-            <div class="modal-field">
+          <div id="studentChallengeCompleteDateRow" class="challenge-date-row">
+            <div id="studentChallengeCompleteDateField" class="modal-field">
               <label>Date</label>
               <input id="studentChallengeCompleteDate" type="date" />
             </div>
@@ -112,6 +151,20 @@ function ensureStudentChallengeModals() {
               <input id="studentChallengeCompletePoints" type="text" readonly />
             </div>
           </div>
+          <div id="studentChallengeCompleteLevelField" class="modal-field" style="display:none;">
+            <label for="studentChallengeCompleteLevel">Level</label>
+            <select id="studentChallengeCompleteLevel">
+              <option value="">Select level</option>
+              <option value="beginner">Beginner</option>
+              <option value="intermediate">Intermediate</option>
+              <option value="advanced">Advanced</option>
+            </select>
+          </div>
+          <div id="studentChallengeCompleteQuantityField" class="modal-field" style="display:none;">
+            <label id="studentChallengeCompleteQuantityLabel" for="studentChallengeCompleteQuantity">Bars completed</label>
+            <input id="studentChallengeCompleteQuantity" type="number" min="1" step="1" value="1" />
+          </div>
+          <div id="studentChallengeCompleteInstruction" class="student-challenge-instruction" style="display:none;"></div>
           <div class="modal-field">
             <label for="studentChallengeCompleteNote">Note (required)</label>
             <textarea id="studentChallengeCompleteNote" rows="3" placeholder="What did you complete?"></textarea>
@@ -161,17 +214,29 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
   const listEl = document.getElementById("studentChallengesList");
   const detailBody = document.getElementById("studentChallengeDetailBody");
   const completeTitleInput = document.getElementById("studentChallengeCompleteTitle");
+  const completeDateRow = document.getElementById("studentChallengeCompleteDateRow");
+  const completeDateField = document.getElementById("studentChallengeCompleteDateField");
   const completeDateInput = document.getElementById("studentChallengeCompleteDate");
   const completePointsInput = document.getElementById("studentChallengeCompletePoints");
+  const completeLevelField = document.getElementById("studentChallengeCompleteLevelField");
+  const completeLevelSelect = document.getElementById("studentChallengeCompleteLevel");
+  const completeQuantityField = document.getElementById("studentChallengeCompleteQuantityField");
+  const completeQuantityLabel = document.getElementById("studentChallengeCompleteQuantityLabel");
+  const completeQuantityInput = document.getElementById("studentChallengeCompleteQuantity");
+  const completeInstructionEl = document.getElementById("studentChallengeCompleteInstruction");
   const completeNoteInput = document.getElementById("studentChallengeCompleteNote");
   const completeErrorEl = document.getElementById("studentChallengeCompleteError");
   const completeCancelBtn = document.getElementById("studentChallengeCompleteCancel");
   const completeSubmitBtn = document.getElementById("studentChallengeCompleteSubmit");
 
   let assignments = [];
+  let weeklyChallenge = null;
+  let weeklyCompletion = null;
+  let weeklyCompletions = [];
   let usersById = new Map();
   let activeTab = "current";
   let selectedCompletionAssignmentId = "";
+  let selectedWeeklyChallengeId = "";
 
   const setListOpen = (open) => {
     if (listOverlay) listOverlay.style.display = open ? "flex" : "none";
@@ -206,18 +271,16 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
       const endedByDate = !!end && today > end;
       const endedByTeacher = challenge?.is_active === false;
       const challengeEnded = endedByDate || endedByTeacher;
-      const expired = challengeEnded && (status === "new" || status === "active" || status === "dismissed");
-      return { ...row, challenge, start, end, status, inWindow, challengeEnded, expired, today };
+      const completedStatus = status === "completed" || status === "completed_pending" || status === "pending_review" || status === "pending";
+      const current = status === "active" && inWindow && !challengeEnded;
+      const expired = !completedStatus && !current;
+      return { ...row, challenge, start, end, status, inWindow, challengeEnded, current, expired, today };
     });
 
     const completed = mapped.filter(entry => entry.status === "completed" || entry.status === "completed_pending" || entry.status === "pending_review" || entry.status === "pending");
-    const current = mapped.filter(entry =>
-      (entry.status === "new" || entry.status === "active" || entry.status === "dismissed") &&
-      entry.inWindow &&
-      !entry.expired
-    );
-    const newVisible = mapped.filter(entry => entry.status === "new" && entry.inWindow && entry.today >= entry.start);
-    const activeVisible = mapped.filter(entry => entry.status === "active" && entry.inWindow);
+    const current = mapped.filter(entry => entry.current);
+    const newVisible = mapped.filter(entry => entry.current && entry.status === "new");
+    const activeVisible = current;
     const expired = mapped.filter(entry => entry.expired);
     return { mapped, buckets: { current, completed, expired, newVisible, activeVisible } };
   };
@@ -274,11 +337,57 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
 
   const getTabRows = () => {
     const { buckets } = derive();
+    const currentRows = weeklyChallenge && !weeklyCompletion
+      ? [{ kind: "weekly", id: `weekly-${weeklyChallenge.id}`, challenge: weeklyChallenge }].concat(buckets.current)
+      : buckets.current;
+    const weeklyCompletedRows = weeklyCompletions
+      .map(completion => ({
+        kind: "weekly",
+        id: `weekly-${completion.challenge_id}`,
+        challenge: completion.weekly_challenges || (String(completion.challenge_id) === String(weeklyChallenge?.id) ? weeklyChallenge : null),
+        completion,
+        status: "completed"
+      }))
+      .filter(row => row.challenge);
+    const completedRows = weeklyCompletedRows.concat(buckets.completed);
     return [
-      { key: "current", label: "Current", rows: buckets.current },
-      { key: "completed", label: "Completed", rows: buckets.completed },
+      { key: "current", label: "Current", rows: currentRows },
+      { key: "completed", label: "Completed", rows: completedRows },
       { key: "expired", label: "Expired", rows: buckets.expired }
     ];
+  };
+
+  const renderWeeklyRow = (row, currentTabKey) => {
+    const challenge = row?.challenge || {};
+    const completion = row?.completion || weeklyCompletion;
+    const done = Boolean(completion);
+    const isCurrent = currentTabKey === "current";
+    return `
+      <div class="student-challenge-row student-challenge-row-weekly" data-weekly-challenge-id="${challenge.id}">
+        <div class="student-challenge-row-top">
+          <div>
+            <div class="student-challenge-title">${String(challenge.title || "Studio Wide Challenge")}</div>
+            <div class="student-challenge-source">&#9733; Studio Wide Challenge</div>
+          </div>
+          <span class="student-challenge-badge ${done ? "is-completed" : ""}">${done ? "Completed" : `Week ${Number(challenge.week_number || 0)}`}</span>
+        </div>
+        <div class="student-challenge-meta">${weeklyPointText(challenge)}</div>
+        ${challenge.description ? `<p class="student-challenge-description">${String(challenge.description)}</p>` : ""}
+        ${challenge.has_levels
+          ? renderWeeklyLevels(challenge)
+          : `<div class="student-challenge-task">${String(challenge.challenge || "")}</div>`}
+        <div class="student-challenge-instruction">
+          <strong>Submission Instructions:</strong> ${String(challenge.notes_instruction || "")}
+        </div>
+        ${done
+          ? `<div class="student-challenge-status-note">Completed ${String(completion.completed_at || "").replace("T", " ").slice(0, 16)} &middot; ${Number(completion.calculated_points || 0)} points submitted</div>`
+          : isCurrent
+            ? `<div class="student-challenge-row-actions">
+                <button type="button" class="blue-button" data-complete-weekly-challenge-id="${challenge.id}">Challenge Completed!</button>
+              </div>`
+            : ""}
+      </div>
+    `;
   };
 
   const renderListModal = () => {
@@ -301,6 +410,7 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
       listEl.innerHTML = `<div class="student-challenge-empty">No challenges in this tab.</div>`;
     } else {
       listEl.innerHTML = currentTab.rows.map(row => {
+        if (row?.kind === "weekly") return renderWeeklyRow(row, currentTab.key);
         const isCurrent = currentTab.key === "current";
         const isActiveRow = row.status === "active";
         const pendingStatus = row.status === "completed_pending" || row.status === "pending_review" || row.status === "pending";
@@ -394,13 +504,27 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
         openCompletionModal(row);
       });
     });
+
+    listEl.querySelectorAll("[data-complete-weekly-challenge-id]").forEach(btn => {
+      btn.addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        openWeeklyCompletionModal();
+      });
+    });
   };
 
   const refreshAll = async () => {
     assignments = await fetchMyChallengeAssignments(studio, targetStudentId);
+    weeklyChallenge = await getCurrentChallenge();
+    weeklyCompletion = weeklyChallenge
+      ? await fetchWeeklyChallengeCompletion(studio, targetStudentId, weeklyChallenge.id)
+      : null;
+    weeklyCompletions = await fetchWeeklyChallengeCompletions(studio, targetStudentId);
     const { buckets } = derive();
     console.log("[StudentChallengesUI] counts", {
       total: assignments.length,
+      weekly: weeklyChallenge ? 1 : 0,
       newVisible: buckets.newVisible.length,
       activeVisible: buckets.activeVisible.length,
       current: buckets.current.length,
@@ -493,17 +617,119 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
       if (typeof showToast === "function") showToast("Only active challenges can be submitted.");
       return;
     }
+    selectedWeeklyChallengeId = "";
     selectedCompletionAssignmentId = String(row.id || "");
     if (completeTitleInput) completeTitleInput.value = String(row.challenge?.title || "Challenge");
+    if (completeDateRow) completeDateRow.style.display = "";
+    if (completeDateField) completeDateField.style.display = "";
     if (completeDateInput) completeDateInput.value = localToday();
     if (completePointsInput) completePointsInput.value = `${Number(row.challenge?.points || 0)} points`;
-    if (completeNoteInput) completeNoteInput.value = "";
+    if (completeLevelField) completeLevelField.style.display = "none";
+    if (completeLevelSelect) completeLevelSelect.value = "";
+    if (completeQuantityField) completeQuantityField.style.display = "none";
+    if (completeQuantityInput) completeQuantityInput.value = "1";
+    if (completeInstructionEl) {
+      completeInstructionEl.textContent = "";
+      completeInstructionEl.style.display = "none";
+    }
+    if (completeNoteInput) {
+      completeNoteInput.value = "";
+      completeNoteInput.placeholder = "What did you complete?";
+    }
+    setCompletionError("");
+    setCompleteOpen(true);
+    completeNoteInput?.focus();
+  };
+
+  const openWeeklyCompletionModal = () => {
+    if (!weeklyChallenge || weeklyCompletion) return;
+    selectedCompletionAssignmentId = "";
+    selectedWeeklyChallengeId = String(weeklyChallenge.id || "");
+    if (completeTitleInput) completeTitleInput.value = String(weeklyChallenge.title || "Studio Wide Challenge");
+    if (completeDateRow) completeDateRow.style.display = "";
+    if (completeDateField) completeDateField.style.display = "none";
+    if (completeDateInput) completeDateInput.value = localToday();
+    if (completePointsInput) completePointsInput.value = weeklyPointText(weeklyChallenge);
+    if (completeLevelField) completeLevelField.style.display = weeklyChallenge.has_levels ? "" : "none";
+    if (completeLevelSelect) completeLevelSelect.value = "";
+    if (completeQuantityField) completeQuantityField.style.display = weeklyRequiresQuantity(weeklyChallenge) ? "" : "none";
+    if (completeQuantityLabel) completeQuantityLabel.textContent = weeklyQuantityLabel(weeklyChallenge);
+    if (completeQuantityInput) completeQuantityInput.value = "1";
+    if (completeInstructionEl) {
+      completeInstructionEl.textContent = String(weeklyChallenge.notes_instruction || "");
+      completeInstructionEl.style.display = completeInstructionEl.textContent ? "block" : "none";
+    }
+    if (completeNoteInput) {
+      completeNoteInput.value = "";
+      completeNoteInput.placeholder = String(weeklyChallenge.notes_instruction || "What did you complete?");
+    }
     setCompletionError("");
     setCompleteOpen(true);
     completeNoteInput?.focus();
   };
 
   const submitCompletion = async () => {
+    const weeklyId = String(selectedWeeklyChallengeId || "").trim();
+    if (weeklyId) {
+      const note = String(completeNoteInput?.value || "").trim();
+      const selectedLevel = weeklyChallenge?.has_levels ? String(completeLevelSelect?.value || "").trim() : null;
+      const quantity = weeklyRequiresQuantity(weeklyChallenge)
+        ? parseInt(String(completeQuantityInput?.value || ""), 10)
+        : null;
+      if (weeklyChallenge?.has_levels && !selectedLevel) {
+        setCompletionError("Please select a level.");
+        return;
+      }
+      if (weeklyRequiresQuantity(weeklyChallenge) && (!Number.isFinite(quantity) || quantity < 1)) {
+        setCompletionError("Please enter the number of bars.");
+        return;
+      }
+      if (!note) {
+        setCompletionError("Please add a note before submitting.");
+        return;
+      }
+
+      if (completeSubmitBtn) {
+        completeSubmitBtn.disabled = true;
+        completeSubmitBtn.textContent = "Submitting...";
+      }
+      setCompletionError("");
+
+      try {
+        await completeWeeklyChallenge({
+          studioId: studio,
+          studentId: targetStudentId,
+          challengeId: weeklyId,
+          selectedLevel,
+          notes: note,
+          quantity: Number.isFinite(quantity) ? quantity : null
+        });
+        await refreshAll();
+        renderListModal();
+        setCompleteOpen(false);
+        setDetailOpen(false);
+        setListOpen(true);
+        selectedWeeklyChallengeId = "";
+        if (typeof showToast === "function") showToast("Weekly challenge completion submitted.");
+      } catch (error) {
+        console.error("[StudentChallenges] weekly completion submit failed", error);
+        const rawMessage = String(error?.message || "");
+        if (rawMessage.includes("weekly_challenge_already_completed")) {
+          setCompletionError("This weekly challenge has already been completed.");
+        } else if (rawMessage.includes("challenge_not_current")) {
+          setCompletionError("This is no longer the current weekly challenge.");
+        } else {
+          setCompletionError(rawMessage || "Couldn't submit weekly challenge.");
+        }
+      } finally {
+        if (completeSubmitBtn) {
+          completeSubmitBtn.disabled = false;
+          completeSubmitBtn.textContent = "Submit Log";
+        }
+      }
+      return;
+    }
+
     const assignmentId = String(selectedCompletionAssignmentId || "").trim();
     const row = assignments.find(entry => String(entry.id) === assignmentId);
     if (!assignmentId || !row) return;

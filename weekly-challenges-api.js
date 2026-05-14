@@ -24,6 +24,46 @@ export async function fetchWeeklyChallengeCompletion(studioId, studentId, challe
   return data || null;
 }
 
+export async function fetchWeeklyChallengeCompletions(studioId, studentId) {
+  const targetStudioId = String(studioId || "").trim();
+  const targetStudentId = String(studentId || "").trim();
+  if (!targetStudioId || !targetStudentId) return [];
+
+  const { data, error } = await supabase
+    .from("weekly_challenge_completions")
+    .select(`
+      id,
+      selected_level,
+      notes,
+      quantity,
+      calculated_points,
+      completed_at,
+      challenge_id,
+      weekly_challenges:challenge_id (
+        id,
+        week_number,
+        title,
+        description,
+        points,
+        point_type,
+        has_levels,
+        beginner,
+        intermediate,
+        advanced,
+        challenge,
+        notes_instruction,
+        active,
+        challenge_type
+      )
+    `)
+    .eq("studio_id", targetStudioId)
+    .eq("user_id", targetStudentId)
+    .order("completed_at", { ascending: false });
+
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
 export async function completeWeeklyChallenge(payload) {
   const { data, error } = await supabase.rpc("complete_weekly_challenge", {
     p_studio_id: payload?.studioId ?? null,

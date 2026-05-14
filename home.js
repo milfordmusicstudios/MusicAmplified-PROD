@@ -5,7 +5,6 @@ import { getActiveProfileId, setActiveProfileId, persistLastActiveStudent, getLa
 import { getAccountProfiles, renderAccountProfileList, hasRole, loadLinkedStudentsForParent } from './account-profiles.js';
 import { initStaffChallengesUI } from './challenges-ui.js';
 import { initStudentChallengesUI } from './challenges-student-ui.js';
-import { initWeeklyChallengeUI } from './weekly-challenges-ui.js';
 import { queueCelebrations } from './celebrations.js';
 import { selectHeroBadge, normalizeHeroBadge } from './badgeHero.js';
 import { renderBadgeHeroHalfPanel } from './BadgeHeroHalfPanel.js';
@@ -1152,12 +1151,6 @@ initParentViewerSelector(availableUsers, profile, viewerContext.viewerUserId, vi
     const studentId = String(getStoredActiveStudentId() || currentProfile?.id || activeProfileIdCurrent || "").trim();
     console.log("[StudentChallengesUI] init studentId =", studentId);
     await initStudentChallengesUI({
-      studioId: viewerContext.studioId || localStorage.getItem("activeStudioId"),
-      studentId,
-      roles: viewerContext.viewerRoles || [],
-      showToast
-    });
-    await initWeeklyChallengeUI({
       studioId: viewerContext.studioId || localStorage.getItem("activeStudioId"),
       studentId,
       roles: viewerContext.viewerRoles || [],
