@@ -189,7 +189,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     teacherOptionData = teacherList.map(t => ({
       id: t.id,
-      label: (`${t.firstName ?? ""} ${t.lastName ?? ""}`.trim() || "Unnamed Teacher")
+      label: (t.lastName && t.firstName
+        ? `${t.lastName}, ${t.firstName}`
+        : (`${t.lastName ?? ""}${t.firstName ?? ""}`.trim() || "Unnamed Teacher"))
     }));
 
     // Apply options to ALL teacher selects (teacherIds, teacherIds2, teacherIds3, ...)

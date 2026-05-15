@@ -4,6 +4,7 @@ import { completeWeeklyChallenge, fetchWeeklyChallengeCompletion, fetchWeeklyCha
 
 const NEW_BANNER_SEEN_KEY = "studentChallengesNewBannerSeen";
 const NEW_BANNER_OPENED_KEY = "studentChallengesNewBannerOpened";
+const NEW_CHALLENGE_OPENED_PREFIX = "studentChallengeOpened";
 const dispatchTutorialAction = (action) => {
   if (!action) return;
   window.dispatchEvent(new CustomEvent(String(action)));
@@ -238,6 +239,32 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
   let selectedCompletionAssignmentId = "";
   let selectedWeeklyChallengeId = "";
 
+  const challengeOpenedKey = (key) =>
+    `${NEW_CHALLENGE_OPENED_PREFIX}:${studio}:${targetStudentId}:${String(key || "").trim()}`;
+
+  const hasOpenedChallenge = (key) => {
+    const normalized = String(key || "").trim();
+    return normalized && localStorage.getItem(challengeOpenedKey(normalized)) === "1";
+  };
+
+  const markChallengeOpened = (key) => {
+    const normalized = String(key || "").trim();
+    if (normalized) localStorage.setItem(challengeOpenedKey(normalized), "1");
+  };
+
+  const weeklyChallengeKey = () =>
+    weeklyChallenge && !weeklyCompletion ? `weekly:${weeklyChallenge.id}` : "";
+
+  const getUnopenedCurrentChallengeKeys = () => {
+    const { buckets } = derive();
+    const keys = buckets.newVisible
+      .map(row => `teacher:${row.id}`)
+      .filter(key => !hasOpenedChallenge(key));
+    const weeklyKey = weeklyChallengeKey();
+    if (weeklyKey && !hasOpenedChallenge(weeklyKey)) keys.unshift(weeklyKey);
+    return keys;
+  };
+
   const setListOpen = (open) => {
     if (listOverlay) listOverlay.style.display = open ? "flex" : "none";
     if (!open) dispatchTutorialAction("aa:tutorial-student-challenges-dismissed");
@@ -291,6 +318,7 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
 
   const markNewBannerOpened = () => {
     sessionStorage.setItem(NEW_BANNER_OPENED_KEY, "1");
+    getUnopenedCurrentChallengeKeys().forEach(markChallengeOpened);
   };
 
   const openListAt = (tabKey) => {
@@ -307,17 +335,15 @@ export async function initStudentChallengesUI({ studioId, studentId, roles, show
     const completedCount = tabRows.find(tab => tab.key === "completed")?.rows.length || 0;
     const expiredCount = tabRows.find(tab => tab.key === "expired")?.rows.length || 0;
     const hasAnyChallenge = currentCount > 0 || completedCount > 0 || expiredCount > 0;
-    const { buckets } = derive();
-    const newCount = buckets.newVisible.length;
+    const newCount = getUnopenedCurrentChallengeKeys().length;
     const formatCountLabel = (count, singular, plural) => `${count} ${count === 1 ? singular : plural}`;
 
     if (newCount > 0) {
       const shouldAnimate = !sessionStorage.getItem(NEW_BANNER_SEEN_KEY);
-      const wasOpened = !!sessionStorage.getItem(NEW_BANNER_OPENED_KEY);
       sessionStorage.setItem(NEW_BANNER_SEEN_KEY, "1");
       noticeMount.innerHTML = `
-        <button id="studentChallengesNoticeBtn" type="button" class="student-challenges-notice-banner${shouldAnimate ? " is-enter" : ""}${wasOpened ? " is-soft" : ""}">
-          <span class="student-challenges-notice-title">&#10024; You have ${newCount} NEW Teacher Challenges!</span>
+        <button id="studentChallengesNoticeBtn" type="button" class="student-challenges-notice-banner${shouldAnimate ? " is-enter" : ""}">
+          <span class="student-challenges-notice-title">&#10024; You have ${newCount} NEW Challenge${newCount === 1 ? "" : "s"}!</span>
           <span class="student-challenges-notice-subtext">Tap to view.</span>
         </button>
       `;

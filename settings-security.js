@@ -49,7 +49,9 @@ function setHelpRequestError(message) {
 }
 
 function getProfileDisplayName(profile) {
-  return `${profile?.firstName || ""} ${profile?.lastName || ""}`.trim() || profile?.email || "User";
+  const first = String(profile?.firstName || "").trim();
+  const last = String(profile?.lastName || "").trim();
+  return last && first ? `${last}, ${first}` : (last || first || profile?.email || "User");
 }
 
 async function loadHelpRecipient(studioId) {

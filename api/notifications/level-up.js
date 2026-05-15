@@ -297,7 +297,10 @@ module.exports = async (req, res) => {
     });
 
     step = "notifications.payload_build";
-    const studentName = String(body.studentName || `${studentRow?.firstName || ""} ${studentRow?.lastName || ""}`.trim() || "Student");
+    const first = String(studentRow?.firstName || "").trim();
+    const last = String(studentRow?.lastName || "").trim();
+    const fallbackStudentName = last && first ? `${last}, ${first}` : (last || first || "Student");
+    const studentName = String(body.studentName || fallbackStudentName);
     const rpcPayload = {
       p_studio_id: studioId,
       p_student_id: studentUserId,

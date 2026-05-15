@@ -6,7 +6,7 @@ let searchTerm = "";
 let searchHandlerBound = false;
 let tagPickerOutsideCloseBound = false;
 let currentEditingRow = null;
-let sortField = "firstName";
+let sortField = "lastName";
 let sortDirection = "asc";
 const TABS = ["students", "families", "teachers", "all"];
 let activeTab = "students";
@@ -28,10 +28,10 @@ const EDITABLE_TEXT_FIELD_TYPES = {
 
 const VALID_TABS = new Set(TABS);
 const TAB_COLUMN_KEYS = {
-  students: ["firstName", "lastName", "email", "avatar", "teacherIds", "instrument", "points", "level", "active"],
-  families: ["firstName", "lastName", "email", "avatar", "roles", "actions"],
-  teachers: ["firstName", "lastName", "email", "avatar", "roles", "actions"],
-  all: ["firstName", "lastName", "email", "avatar", "roles", "teacherIds", "instrument", "points", "level", "actions"]
+  students: ["lastName", "firstName", "email", "avatar", "teacherIds", "instrument", "points", "level", "active"],
+  families: ["lastName", "firstName", "email", "avatar", "roles", "actions"],
+  teachers: ["lastName", "firstName", "email", "avatar", "roles", "actions"],
+  all: ["lastName", "firstName", "email", "avatar", "roles", "teacherIds", "instrument", "points", "level", "actions"]
 };
 
 const COLUMN_DEFS = {
@@ -71,6 +71,13 @@ function normalizeStatusFilter(value) {
 
 function normalize(value) {
   return String(value ?? "").toLowerCase().trim();
+}
+
+function formatLastFirstName(person, fallback = "") {
+  const first = String(person?.firstName ?? person?.first_name ?? "").trim();
+  const last = String(person?.lastName ?? person?.last_name ?? "").trim();
+  if (last && first) return `${last}, ${first}`;
+  return last || first || fallback;
 }
 
 function getTabColumns() {
@@ -195,14 +202,14 @@ function getTeacherLabelById(id) {
 
   const directoryMatch = teacherDirectoryUsers.find(user => String(user?.id).trim() === normalizedId);
   if (directoryMatch) {
-    const fullName = `${directoryMatch.firstName || ""} ${directoryMatch.lastName || ""}`.trim();
+    const fullName = formatLastFirstName(directoryMatch);
     if (fullName) return fullName;
     if (directoryMatch.email) return String(directoryMatch.email);
   }
 
   const userMatch = allUsers.find(user => String(user?.id).trim() === normalizedId);
   if (userMatch) {
-    const fullName = `${userMatch.firstName || ""} ${userMatch.lastName || ""}`.trim();
+    const fullName = formatLastFirstName(userMatch);
     if (fullName) return fullName;
     if (userMatch.email) return String(userMatch.email);
   }
@@ -314,7 +321,7 @@ function buildOptionLists(users) {
       || directRoles.includes("admin");
     const isAssignedTeacher = assignedTeacherIds.has(String(user.id));
     if (!isStaff && !isAssignedTeacher) return;
-    const label = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Teacher";
+    const label = formatLastFirstName(user, user.email || "Teacher");
     teacherMap.set(String(user.id), { value: String(user.id), label });
   });
 
@@ -361,6 +368,9 @@ function matchesSearch(row) {
   return (
     normalize(row.firstName).includes(q) ||
     normalize(row.lastName).includes(q) ||
+    normalize(formatLastFirstName(row)).includes(q) ||
+    normalize(`${row.lastName || ""} ${row.firstName || ""}`).includes(q) ||
+    normalize(`${row.firstName || ""} ${row.lastName || ""}`).includes(q) ||
     normalize(row.email).includes(q)
   );
 }
@@ -391,6 +401,7 @@ function isNumericSortField(field) {
 
 function getSortValue(user, field) {
   if (!user || !field) return "";
+  if (field === "firstName" || field === "lastName") return formatLastFirstName(user).toLowerCase();
   if (field === "roles") return getDisplayValue(user, "roles").toLowerCase();
   if (field === "teacherIds") return getDisplayValue(user, "teacherIds").toLowerCase();
   if (field === "instrument") return getDisplayValue(user, "instrument").toLowerCase();

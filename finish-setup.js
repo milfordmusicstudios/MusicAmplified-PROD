@@ -118,7 +118,9 @@ async function loadTeachersForStudio(studioId) {
   console.log("[FinishSetup] teachers found", (data || []).length, data);
   teacherOptionData = (data || []).map(t => ({
     id: t.id,
-    label: (`${t.firstName ?? ""} ${t.lastName ?? ""}`.trim() || t.id)
+    label: (t.lastName && t.firstName
+      ? `${t.lastName}, ${t.firstName}`
+      : (`${t.lastName ?? ""}${t.firstName ?? ""}`.trim() || t.id))
   }));
 
   if ((data || []).length === 0) {

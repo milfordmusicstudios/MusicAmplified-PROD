@@ -416,6 +416,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   };
 
   const normalizeFilterValue = (value) => String(value || "").trim();
+  const formatLastFirstName = (person, fallback = "") => {
+    const first = String(person?.firstName ?? person?.first_name ?? "").trim();
+    const last = String(person?.lastName ?? person?.last_name ?? "").trim();
+    if (last && first) return `${last}, ${first}`;
+    return last || first || fallback;
+  };
+  const formatFirstLastName = (person, fallback = "") => {
+    const first = String(person?.firstName ?? person?.first_name ?? "").trim();
+    const last = String(person?.lastName ?? person?.last_name ?? "").trim();
+    return `${first} ${last}`.trim() || fallback;
+  };
   const hasServerFilters = () => Boolean(
     serverLogFilters.studentIds?.length ||
     serverLogFilters.dateFrom ||
@@ -463,9 +474,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       filterStudentsDropdown.setAttribute("hidden", "");
       return;
     }
-    const matches = filterStudentRoster.filter((student) =>
-      getFilterStudentName(student).toLowerCase().includes(query)
-    );
+    const matches = filterStudentRoster.filter((student) => {
+      const lastFirst = getFilterStudentName(student).toLowerCase();
+      return lastFirst.includes(query) ||
+        lastFirst.replace(/,/g, "").includes(query) ||
+        formatFirstLastName(student).toLowerCase().includes(query);
+    });
     if (!matches.length) {
       const empty = document.createElement("div");
       empty.className = "staff-student-no-match";
@@ -644,10 +658,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const logsData = await fetchLogsPaginated();
     allLogs = (logsData || []).map(l => ({
       ...l,
-      fullName:
-        (users.find(u => String(u.id) === String(l.userId))?.firstName || "Unknown") +
-        " " +
-        (users.find(u => String(u.id) === String(l.userId))?.lastName || "")
+      fullName: formatLastFirstName(users.find(u => String(u.id) === String(l.userId)), "Unknown")
     }));
 
     hideReviewLogsError();
@@ -732,7 +743,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     filteredLogs = allLogs.filter(l => {
       const notesText = String(l.notes || "").toLowerCase();
-      const matchesQuickSearch = !quickKeyword || notesText.includes(quickKeyword);
+      const nameText = String(l.fullName || "").toLowerCase();
+      const firstLastNameText = formatFirstLastName(users.find(u => String(u.id) === String(l.userId))).toLowerCase();
+      const matchesQuickSearch = !quickKeyword ||
+        notesText.includes(quickKeyword) ||
+        nameText.includes(quickKeyword) ||
+        nameText.replace(/,/g, "").includes(quickKeyword) ||
+        firstLastNameText.includes(quickKeyword);
       const matchesModalKeyword = !modalKeyword || notesText.includes(modalKeyword);
       const logDate = getDateOnlyString(l.date);
       const matchesStudent = !serverLogFilters.studentIds?.length || serverLogFilters.studentIds.map(String).includes(String(l.userId));
@@ -1278,6 +1295,7 @@ let recognitionExportRoster = [];
 let recognitionExportRosterLoaded = false;
 let recognitionLevels = [];
 let recognitionLevelsLoaded = false;
+let recognitionPrintBranding = null;
 
 const isLevelUpNotification = (row) => {
   const type = String(row?.type || "").toLowerCase();
@@ -1374,6 +1392,11 @@ const shouldHideRecognitionNotification = (row) =>
 const normalizeRecognitionStudentName = (name) =>
   String(name || "").trim().replace(/\s+/g, " ").toLowerCase();
 
+const getRecognitionRosterNameKeys = (student) => [
+  getQuickAddStudentName(student),
+  formatFirstLastName(student)
+].map(normalizeRecognitionStudentName).filter(Boolean);
+
 const formatRecognitionExportDate = (date) => {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
   return date.toLocaleDateString("en-US");
@@ -1382,7 +1405,7 @@ const formatRecognitionExportDate = (date) => {
 const getRecognitionExportRosterMatch = (studentName) => {
   const normalized = normalizeRecognitionStudentName(studentName);
   if (!normalized) return null;
-  return recognitionExportRoster.find((row) => normalizeRecognitionStudentName(getQuickAddStudentName(row)) === normalized) || null;
+  return recognitionExportRoster.find((row) => getRecognitionRosterNameKeys(row).includes(normalized)) || null;
 };
 
 const getRecognitionExportRosterMatchFor = (studentName, userId = "") => {
@@ -1489,6 +1512,7 @@ const toRecognitionRosterExportRow = (student) => {
     createdAt: null,
     recognitionGiven: false,
     recognitionDate: null,
+    recognitionNote: "",
     hasNotification: false
   };
 };
@@ -1515,19 +1539,21 @@ const toRecognitionExportRow = (row) => {
   const student = getNotificationStudentName(row).trim();
   const userId = getNotificationUserId(row);
   const studentRecord = getRecognitionExportRosterMatchFor(student, userId);
+  const displayStudent = studentRecord ? getQuickAddStudentName(studentRecord) : student;
   const createdAt = new Date(row?.created_at || "");
   const totalPoints = getRecognitionTotalPointsFor(student, userId);
   return {
     source: row,
     userId,
     studentUserId: studentRecord?.id || "",
-    student,
+    student: displayStudent,
     level: getNotificationLevelNumber(row),
     totalPoints,
     pointsNeededForNextLevel: getRecognitionPointsNeededForNextLevelFor(student, userId),
     createdAt,
     recognitionGiven: isRecognitionGiven(row),
     recognitionDate: getRecognitionRecordedAtValue(row) ? new Date(getRecognitionRecordedAtValue(row)) : null,
+    recognitionNote: getRecognitionNoteValue(row),
     hasNotification: true
   };
 };
@@ -1556,6 +1582,32 @@ const getRecognitionCsvFilename = (scope) => {
   if (scope === "custom") return "recognition-custom-date-range.csv";
   if (scope === "recent") return "recognition-recent-levels.csv";
   return "recognition-highest-levels.csv";
+};
+
+const loadRecognitionPrintBranding = async () => {
+  if (recognitionPrintBranding) return recognitionPrintBranding;
+  const fallback = { name: "", logoUrl: "images/logos/amplified.png" };
+  try {
+    const studioId = String(viewerContext?.studioId || "").trim();
+    if (!studioId) {
+      recognitionPrintBranding = fallback;
+      return recognitionPrintBranding;
+    }
+    const { data, error } = await supabase
+      .from("studios")
+      .select("name, logo_url")
+      .eq("id", studioId)
+      .single();
+    if (error) throw error;
+    recognitionPrintBranding = {
+      name: String(data?.name || "").trim(),
+      logoUrl: String(data?.logo_url || "").trim() || fallback.logoUrl
+    };
+  } catch (error) {
+    console.warn("[ReviewLogs] recognition print branding failed", error);
+    recognitionPrintBranding = fallback;
+  }
+  return recognitionPrintBranding;
 };
 
 const getHighestCompletedLevelsForRecognition = (notifications = [], options = {}) => {
@@ -1632,18 +1684,15 @@ const getRecognitionRowsWithRosterStudents = (rows, options = {}) => {
 };
 
 const getRecognitionExportColumns = (options, rows) => {
-  const columns = [
+  return [
     { key: "student", label: "Student", value: (row) => row.student },
     { key: "level", label: "Level Completed", value: (row) => row.level },
-    { key: "pointsNeededForNextLevel", label: "Points Needed For Next Level", value: (row) => row.pointsNeededForNextLevel },
-    ...(options.includeDates === false ? [] : [{ key: "completionDate", label: "Completion Date", value: (row) => formatRecognitionExportDate(row.createdAt) }]),
-    { key: "recognitionGiven", label: "Recognition Given", value: (row) => row.recognitionGiven ? "Yes" : "No" },
-    ...(rows.some((row) => row.recognitionGiven && row.recognitionDate instanceof Date && !Number.isNaN(row.recognitionDate.getTime()))
-      ? [{ key: "recognitionDate", label: "Recognition Date", value: (row) => formatRecognitionExportDate(row.recognitionDate) }]
-      : [])
+    { key: "completionDate", label: "Date Completed", value: (row) => formatRecognitionExportDate(row.createdAt) },
+    { key: "totalPoints", label: "Total Points", value: (row) => row.totalPoints },
+    { key: "pointsNeededForNextLevel", label: "Points to Next Level", value: (row) => row.pointsNeededForNextLevel },
+    { key: "recognitionDate", label: "Recognition Date", value: (row) => formatRecognitionExportDate(row.recognitionDate) },
+    { key: "notes", label: "Notes", value: (row) => row.recognitionNote || "" }
   ];
-  if (options.includePoints) columns.push({ key: "totalPoints", label: "Total Points", value: (row) => row.totalPoints });
-  return columns;
 };
 
 const downloadRecognitionCsv = (rows, columns, filename, statusEl) => {
@@ -1670,8 +1719,13 @@ const htmlEscape = (value) => String(value ?? "")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
 
-const printRecognitionSummary = (rows, columns, subtitle, statusEl) => {
+const printRecognitionSummary = (rows, columns, subtitle, statusEl, branding = {}) => {
   const generatedAt = new Date().toLocaleDateString("en-US");
+  const logoUrl = String(branding?.logoUrl || "").trim();
+  const studioName = String(branding?.name || "Studio").trim();
+  const logoHtml = logoUrl
+    ? `<img class="studio-logo" src="${htmlEscape(logoUrl)}" alt="${htmlEscape(studioName)} logo">`
+    : "";
   const rowsHtml = rows.length
     ? rows.map((row) => `
         <tr>
@@ -1688,22 +1742,32 @@ const printRecognitionSummary = (rows, columns, subtitle, statusEl) => {
       <html>
       <head>
         <meta charset="utf-8">
-        <title>Recital Recognition List</title>
+        <title>Level Recognition List</title>
         <style>
-          body { font-family: Arial, sans-serif; color: #123; margin: 32px; }
-          h1 { margin: 0 0 4px; font-size: 28px; }
-          h2 { margin: 0 0 8px; font-size: 16px; font-weight: 600; color: #345; }
-          .generated { margin: 0 0 24px; font-size: 12px; color: #556; }
+          body { font-family: Arial, sans-serif; color: #123; margin: 24px; }
+          .report-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+          h1 { margin: 0 0 3px; font-size: 22px; }
+          h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: #345; }
+          .generated { margin: 0; font-size: 10px; color: #556; }
+          .studio-logo { max-width: 96px; max-height: 58px; object-fit: contain; }
           table { width: 100%; border-collapse: collapse; }
-          th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #ccd8e2; }
-          th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #345; }
-          @media print { body { margin: 20mm; } }
+          th, td { text-align: left; padding: 4px 5px; border-bottom: 1px solid #d8e0e8; vertical-align: top; font-size: 11pt; line-height: 1.18; }
+          th { font-size: 9pt; text-transform: uppercase; letter-spacing: .02em; color: #345; white-space: nowrap; }
+          tr { break-inside: avoid; page-break-inside: avoid; }
+          td:nth-child(1) { min-width: 120px; }
+          td:nth-child(7) { width: 22%; }
+          @media print { body { margin: 12mm; } .studio-logo { max-width: 90px; max-height: 54px; } }
         </style>
       </head>
       <body>
-        <h1>Recital Recognition List</h1>
-        <h2>${htmlEscape(subtitle)}</h2>
-        <p class="generated">Generated ${htmlEscape(generatedAt)}</p>
+        <div class="report-header">
+          <div>
+            <h1>Level Recognition List</h1>
+            <h2>${htmlEscape(subtitle)}</h2>
+            <p class="generated">Generated ${htmlEscape(generatedAt)}</p>
+          </div>
+          ${logoHtml}
+        </div>
         <table>
           <thead>
             <tr>
@@ -2207,7 +2271,12 @@ function renderNotificationPickerDropdown() {
     dropdown.setAttribute("hidden", "");
     return;
   }
-  const matches = notificationFilterRoster.filter((student) => getQuickAddStudentName(student).toLowerCase().includes(query));
+  const matches = notificationFilterRoster.filter((student) => {
+    const lastFirst = getQuickAddStudentName(student).toLowerCase();
+    return lastFirst.includes(query) ||
+      lastFirst.replace(/,/g, "").includes(query) ||
+      formatFirstLastName(student).toLowerCase().includes(query);
+  });
   if (!matches.length) {
     const empty = document.createElement("div");
     empty.className = "staff-student-no-match";
@@ -2446,7 +2515,8 @@ async function runRecognitionExport() {
     if (options.format === "csv") {
       downloadRecognitionCsv(rows, columns, getRecognitionCsvFilename(options.scope), status);
     } else {
-      printRecognitionSummary(rows, columns, subtitle, status);
+      const branding = await loadRecognitionPrintBranding();
+      printRecognitionSummary(rows, columns, subtitle, status, branding);
     }
   } catch (error) {
     console.error("[ReviewLogs] recognition export failed", error);
@@ -2936,9 +3006,7 @@ function getQuickAddLocalDateString(dateLike) {
 }
 
 function getQuickAddStudentName(student) {
-  const first = student?.firstName || student?.first_name || "";
-  const last = student?.lastName || student?.last_name || "";
-  return `${first} ${last}`.trim() || student?.email || "Student";
+  return formatLastFirstName(student, student?.email || "Student");
 }
 
 function extractQuickAddDefaultPoints(categoryRow, categoryName) {
@@ -3067,9 +3135,12 @@ function renderQuickAddStudentDropdown() {
     return;
   }
 
-  const matches = quickAddRoster.filter((student) =>
-    getQuickAddStudentName(student).toLowerCase().includes(query)
-  );
+  const matches = quickAddRoster.filter((student) => {
+    const lastFirst = getQuickAddStudentName(student).toLowerCase();
+    return lastFirst.includes(query) ||
+      lastFirst.replace(/,/g, "").includes(query) ||
+      formatFirstLastName(student).toLowerCase().includes(query);
+  });
 
   if (!matches.length) {
     const empty = document.createElement("div");

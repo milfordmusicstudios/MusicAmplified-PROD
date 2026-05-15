@@ -208,7 +208,9 @@ function renderHomeAvatarFromActiveProfile() {
   } else if (img.dataset?.placeholder) {
     img.src = img.dataset.placeholder;
   }
-  const name = active ? `${active.firstName || active.first_name || ""} ${active.lastName || active.last_name || ""}`.trim() : "";
+  const first = active ? String(active.firstName || active.first_name || "").trim() : "";
+  const last = active ? String(active.lastName || active.last_name || "").trim() : "";
+  const name = last && first ? `${last}, ${first}` : (last || first);
   img.alt = name || "Profile";
 }
 
@@ -516,7 +518,9 @@ qs('levelBadgeImg').src = level.badge;
 }
 
 function getUserLabel(user) {
-  const name = `${user.firstName || ""} ${user.lastName || ""}`.trim();
+  const first = String(user.firstName || "").trim();
+  const last = String(user.lastName || "").trim();
+  const name = last && first ? `${last}, ${first}` : (last || first);
   return name || "Student";
 }
 
@@ -2931,7 +2935,7 @@ async function initStaffQuickLog({ authUserId, studioId, roles }) {
   const getStudentName = (student) => {
     const first = student?.firstName || '';
     const last = student?.lastName || '';
-    return `${first} ${last}`.trim() || student?.email || 'Student';
+    return last && first ? `${last}, ${first}` : (last || first || student?.email || 'Student');
   };
 
   const syncStudentSelect = () => {

@@ -425,6 +425,13 @@ export async function renderActiveStudentHeader(options = {}) {
   const mount = document.getElementById(mountId);
   if (!mount && !useHomeHeader) return { blocked: false };
 
+  const formatLastFirstName = (person, fallback = "") => {
+    const first = String(person?.firstName ?? person?.first_name ?? "").trim();
+    const last = String(person?.lastName ?? person?.last_name ?? "").trim();
+    if (last && first) return `${last}, ${first}`;
+    return last || first || fallback;
+  };
+
   const { data: sessionData } = await supabase.auth.getSession();
   const authUserId = sessionData?.session?.user?.id || null;
   if (!authUserId) return { blocked: false };
@@ -498,7 +505,7 @@ export async function renderActiveStudentHeader(options = {}) {
         `;
       } else {
         const optionsHtml = linked.map(s => {
-          const label = `${s.firstName ?? ""} ${s.lastName ?? ""}`.trim() || "Student";
+          const label = formatLastFirstName(s, "Student");
           return `<option value="${s.id}">${label}</option>`;
         }).join("");
         mount.innerHTML = `
@@ -566,7 +573,7 @@ export async function renderActiveStudentHeader(options = {}) {
     || (currentLevel?.id ? `images/levelBadges/level${currentLevel.id}.png` : null)
     || "images/levelBadges/level1.png";
 
-  const fullName = `${studentProfile?.firstName ?? ""} ${studentProfile?.lastName ?? ""}`.trim() || "Student";
+  const fullName = formatLastFirstName(studentProfile, "Student");
   const nameText = typeof nameTemplate === "function" ? nameTemplate(studentProfile) : fullName;
 
   if (useHomeHeader) {
@@ -618,7 +625,7 @@ export async function renderActiveStudentHeader(options = {}) {
       img.src = student.avatarUrl || "images/icons/default.png";
       img.alt = "";
       const label = document.createElement("span");
-      label.textContent = `${student.firstName ?? ""} ${student.lastName ?? ""}`.trim() || "Student";
+      label.textContent = formatLastFirstName(student, "Student");
       item.appendChild(img);
       item.appendChild(label);
       item.addEventListener("click", () => {
@@ -945,7 +952,11 @@ export async function createLevelCompletedNotification({
     } else if (studentData?.id) {
       studentRow = studentData;
       notificationStudioId = notificationStudioId || String(studentData?.studio_id || "").trim() || null;
-      resolvedStudentName = resolvedStudentName || `${studentData?.firstName || ""} ${studentData?.lastName || ""}`.trim();
+      if (!resolvedStudentName) {
+        const first = String(studentData?.firstName || "").trim();
+        const last = String(studentData?.lastName || "").trim();
+        resolvedStudentName = last && first ? `${last}, ${first}` : (last || first);
+      }
     }
 
     const { data: authData, error: authError } = await supabase.auth.getUser();
@@ -1124,7 +1135,9 @@ export async function recalculateUserPoints(userId, options = {}) {
     });
 
     if (didLevelUp) {
-      const fullName = `${userBefore.firstName || ''} ${userBefore.lastName || ''}`.trim();
+      const first = String(userBefore.firstName || "").trim();
+      const last = String(userBefore.lastName || "").trim();
+      const fullName = last && first ? `${last}, ${first}` : (last || first);
       const displayLevelName = getDisplayLevelName(currentLevel.name || currentLevel.id);
       let notificationStudioId = studioId;
       if (!notificationStudioId) {

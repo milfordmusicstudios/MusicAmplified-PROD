@@ -20,6 +20,13 @@
   let currentUserId = null;
   const supabase = window.supabase;
 
+  function formatLastFirstName(person, fallback = "") {
+    const first = String(person?.firstName ?? "").trim();
+    const last = String(person?.lastName ?? "").trim();
+    if (last && first) return `${last}, ${first}`;
+    return last || first || fallback;
+  }
+
   function setStatus(message, isError = false) {
     if (!statusEl) return;
     statusEl.textContent = message || "";
@@ -159,15 +166,15 @@
 
     const students = (data || []).filter(isStudent);
     students.sort((a, b) => {
-      const aName = `${a.lastName || ""} ${a.firstName || ""}`.trim().toLowerCase();
-      const bName = `${b.lastName || ""} ${b.firstName || ""}`.trim().toLowerCase();
+      const aName = formatLastFirstName(a).toLowerCase();
+      const bName = formatLastFirstName(b).toLowerCase();
       return aName.localeCompare(bName);
     });
 
     students.forEach(student => {
       const opt = document.createElement("option");
       opt.value = student.id;
-      const name = `${student.firstName || ""} ${student.lastName || ""}`.trim();
+      const name = formatLastFirstName(student);
       opt.textContent = name || student.email || student.id;
       studentSelect.appendChild(opt);
     });

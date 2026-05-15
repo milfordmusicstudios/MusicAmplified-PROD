@@ -240,7 +240,9 @@ export async function loadTeachersForStudio(studioId) {
     )
     .map(t => ({
       id: t.id,
-      label: (`${t.firstName ?? ""} ${t.lastName ?? ""}`.trim() || "Unnamed Teacher")
+      label: (t.lastName && t.firstName
+        ? `${t.lastName}, ${t.firstName}`
+        : (`${t.lastName ?? ""}${t.firstName ?? ""}`.trim() || "Unnamed Teacher"))
     }));
 }
 

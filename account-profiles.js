@@ -19,7 +19,9 @@ function normalizeProfile(raw) {
   if (!raw) return null;
   const firstName = raw.firstName ?? raw.first_name ?? "";
   const lastName = raw.lastName ?? raw.last_name ?? "";
-  const label = `${firstName} ${lastName}`.trim() || "User";
+  const label = lastName && firstName
+    ? `${lastName}, ${firstName}`
+    : (lastName || firstName || "User");
   const avatarUrl = raw.avatarUrl ?? raw.avatar_url ?? raw.avatar ?? "";
   const roleNames = normalizeRoles(raw.roles);
   return {

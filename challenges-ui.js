@@ -76,7 +76,7 @@ function normalizeWeeklyChallengeForStaff(challenge) {
 function getUserLabel(user) {
   const first = String(user?.firstName || "").trim();
   const last = String(user?.lastName || "").trim();
-  const full = `${first} ${last}`.trim();
+  const full = last && first ? `${last}, ${first}` : (last || first);
   return full || String(user?.email || "User");
 }
 

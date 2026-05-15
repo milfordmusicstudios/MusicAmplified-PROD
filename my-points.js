@@ -342,7 +342,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       .eq("id", userId)
       .single();
     const firstName = profileRow?.firstName || "";
-    const studentName = `${profileRow?.firstName || ""} ${profileRow?.lastName || ""}`.trim() || "Student";
+    const first = String(profileRow?.firstName || "").trim();
+    const last = String(profileRow?.lastName || "").trim();
+    const studentName = last && first ? `${last}, ${first}` : (last || first || "Student");
     if (pointsTitle) {
       pointsTitle.textContent = firstName ? `${firstName}'s Points` : "My Points";
     }

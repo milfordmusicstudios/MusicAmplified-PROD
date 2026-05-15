@@ -37,6 +37,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   let pointsManuallyEdited = false;
   let selectedPromptKey = "";
   let selectedPromptCategory = "";
+  const formatLastFirstName = (person, fallback = "") => {
+    const first = String(person?.firstName ?? "").trim();
+    const last = String(person?.lastName ?? "").trim();
+    if (last && first) return `${last}, ${first}`;
+    return last || first || fallback;
+  };
 
   const setPromptActive = (key) => {
     selectedPromptKey = String(key || "");
@@ -199,8 +205,8 @@ categorySelect.addEventListener("change", () => {
 
       // ✅ Sort students alphabetically
       const sorted = filtered.sort((a, b) => {
-        const nameA = `${a.firstName} ${a.lastName}`.toLowerCase();
-        const nameB = `${b.firstName} ${b.lastName}`.toLowerCase();
+        const nameA = formatLastFirstName(a).toLowerCase();
+        const nameB = formatLastFirstName(b).toLowerCase();
         return nameA.localeCompare(nameB);
       });
 
@@ -209,7 +215,7 @@ categorySelect.addEventListener("change", () => {
       sorted.forEach(s => {
         const opt = document.createElement("option");
         opt.value = s.id;
-        opt.textContent = `${s.firstName} ${s.lastName}`;
+        opt.textContent = formatLastFirstName(s);
         studentSelect.appendChild(opt);
       });
     }

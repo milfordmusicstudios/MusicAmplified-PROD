@@ -260,7 +260,9 @@ function renderAvatars(placements) {
     const avatarUrl = getValidAvatarUrl(p.student.avatarUrl);
     if (!avatarUrl) return;
     avatar.src = avatarUrl;
-    const fullName = `${p.student.firstName ?? ""} ${p.student.lastName ?? ""}`.trim() || "Student";
+    const first = String(p.student.firstName ?? "").trim();
+    const last = String(p.student.lastName ?? "").trim();
+    const fullName = last && first ? `${last}, ${first}` : (last || first || "Student");
     avatar.alt = fullName;
     avatar.title = `${fullName} — ${p.total} pts`;
     avatar.dataset.levelId = String(p.levelId);
