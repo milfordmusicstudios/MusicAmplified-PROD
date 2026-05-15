@@ -3303,9 +3303,8 @@ async function loadQuickAddStudents() {
 
   const { data: students, error } = await supabase
     .from("users")
-    .select("id, firstName, lastName, email, roles, teacherIds, active, deactivated_at, points, instrument, instrumentName, primaryInstrument, primary_instrument")
+    .select("id, firstName, lastName, email, roles, teacherIds, deactivated_at, points, level, instrument")
     .eq("studio_id", viewerContext.studioId)
-    .eq("active", true)
     .is("deactivated_at", null);
 
   if (error) {
